@@ -1,0 +1,46 @@
+# Git Town Configuration
+# https://www.git-town.com/configuration
+
+[sync-strategy]
+# How to sync feature branches with their tracking branch
+# Options: "merge", "rebase"
+feature-branches = "rebase"
+
+[hosting]
+# Hosting platform (GitHub, GitLab, etc.)
+platform = "github"
+
+# GitHub organization and repository
+origin-hostname = "github.com"
+
+[branches]
+# Main branch that other branches are based on
+main = "main"
+
+# Perennial branches that are never shipped
+perennials = []
+
+[create]
+# Automatically push newly created branches
+new-branch-push = true
+
+# Create branches as draft PRs
+push-new-branches = true
+
+[sync]
+# Run sync before creating PRs
+before-ship = true
+
+# Tags to sync
+tags = true
+
+[ship]
+# Delete remote branch after shipping
+delete-tracking-branch = true
+
+[stack]
+# Enable stacked changes support
+enabled = true
+
+# Automatically update PR descriptions when stack changes
+update-pr-body = true

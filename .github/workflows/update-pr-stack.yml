@@ -1,0 +1,198 @@
+name: Update PR Stack Info
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  # Allow manual trigger for updating all open PRs
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  update-stack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for all branches
+
+      - name: Setup Git Town
+        run: |
+          curl -L https://github.com/git-town/git-town/releases/latest/download/git-town-linux-amd64 -o git-town
+          chmod +x git-town
+          sudo mv git-town /usr/local/bin/
+
+      - name: Get branch information
+        id: branch-info
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get the PR number and branch
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger - will update all PRs"
+            echo "manual=true" >> $GITHUB_OUTPUT
+          else
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            BRANCH="${{ github.event.pull_request.head.ref }}"
+            echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+            echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+            echo "manual=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Find stack relationships
+        id: find-stack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get all open PRs
+          ALL_PRS=$(gh pr list --state open --json number,headRefName,baseRefName,title --limit 100)
+
+          # Current PR info
+          CURRENT_PR="${{ steps.branch-info.outputs.pr_number }}"
+          CURRENT_BRANCH="${{ steps.branch-info.outputs.branch }}"
+
+          # Function to build stack tree
+          build_stack_tree() {
+            local current_branch="$1"
+            local indent="$2"
+            local highlight_pr="$3"
+
+            # Find PR for this branch
+            local pr_info=$(echo "$ALL_PRS" | jq -r --arg branch "$current_branch" '.[] | select(.headRefName == $branch)')
+            local pr_num=$(echo "$pr_info" | jq -r '.number')
+            local pr_title=$(echo "$pr_info" | jq -r '.title')
+
+            if [ -n "$pr_num" ] && [ "$pr_num" != "null" ]; then
+              if [ "$pr_num" = "$highlight_pr" ]; then
+                echo "${indent}**→ #${pr_num}** - \`${current_branch}\` - ${pr_title}"
+              else
+                echo "${indent}#${pr_num} - \`${current_branch}\` - ${pr_title}"
+              fi
+
+              # Find child PRs (PRs that base on this branch)
+              local children=$(echo "$ALL_PRS" | jq -r --arg base "$current_branch" '.[] | select(.baseRefName == $base) | .headRefName')
+
+              if [ -n "$children" ]; then
+                while IFS= read -r child; do
+                  [ -z "$child" ] && continue
+                  build_stack_tree "$child" "${indent}  " "$highlight_pr"
+                done <<< "$children"
+              fi
+            fi
+          }
+
+          # Find the root of the stack (branch that bases on main)
+          find_stack_root() {
+            local branch="$1"
+            local pr_info=$(echo "$ALL_PRS" | jq -r --arg branch "$branch" '.[] | select(.headRefName == $branch)')
+            local base=$(echo "$pr_info" | jq -r '.baseRefName')
+
+            if [ "$base" = "main" ] || [ -z "$base" ] || [ "$base" = "null" ]; then
+              echo "$branch"
+            else
+              find_stack_root "$base"
+            fi
+          }
+
+          # Find stack root for current branch
+          STACK_ROOT=$(find_stack_root "$CURRENT_BRANCH")
+
+          # Build the stack tree
+          STACK_TREE=$(build_stack_tree "$STACK_ROOT" "" "$CURRENT_PR")
+
+          # Save to output (escape newlines for GitHub Actions)
+          {
+            echo 'stack_tree<<EOF'
+            echo "$STACK_TREE"
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+          # Check if this is actually a stack (more than one PR)
+          PR_COUNT=$(echo "$STACK_TREE" | grep -c "^#" || echo "0")
+          if [ "$PR_COUNT" -gt 1 ]; then
+            echo "is_stack=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_stack=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update PR description
+        if: steps.find-stack.outputs.is_stack == 'true' && steps.branch-info.outputs.manual == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ steps.branch-info.outputs.pr_number }}"
+          STACK_TREE="${{ steps.find-stack.outputs.stack_tree }}"
+
+          # Get current PR body
+          CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body')
+
+          # Create stack section
+          STACK_SECTION="<!-- STACK_START -->
+          $STACK_TREE
+          <!-- STACK_END -->"
+
+          # Check if stack section already exists
+          if echo "$CURRENT_BODY" | grep -q "<!-- STACK_START -->"; then
+            # Replace existing stack section using awk
+            NEW_BODY=$(echo "$CURRENT_BODY" | awk '
+              /<!-- STACK_START -->/ {
+                print "<!-- STACK_START -->"
+                print "'"$STACK_TREE"'"
+                print "<!-- STACK_END -->"
+                skip=1
+                next
+              }
+              /<!-- STACK_END -->/ {
+                skip=0
+                next
+              }
+              !skip { print }
+            ')
+          else
+            # Add stack section
+            NEW_BODY="$CURRENT_BODY
+
+          ## Stack Information
+
+          This PR is part of a stack. Click on linked PRs to navigate the stack.
+
+          $STACK_SECTION"
+          fi
+
+          # Update the PR
+          gh pr edit "$PR_NUMBER" --body "$NEW_BODY"
+
+          echo "✅ Updated PR #$PR_NUMBER with stack information"
+
+      - name: Update all stacked PRs
+        if: steps.branch-info.outputs.manual == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get all open PRs
+          ALL_PRS=$(gh pr list --state open --json number,headRefName,baseRefName --limit 100)
+
+          # For each PR, check if it's part of a stack
+          echo "$ALL_PRS" | jq -r '.[] | .number' | while read -r pr_num; do
+            # Trigger this workflow for each PR
+            gh workflow run update-pr-stack.yml
+          done
+
+          echo "✅ Triggered stack updates for all open PRs"
+
+      - name: Comment on PR
+        if: steps.find-stack.outputs.is_stack == 'true' && steps.branch-info.outputs.manual == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ steps.branch-info.outputs.pr_number }}"
+
+          # Check if we already commented
+          EXISTING_COMMENT=$(gh pr view "$PR_NUMBER" --json comments --jq '.comments[] | select(.body | contains("Stack detected")) | .id')
+
+          if [ -z "$EXISTING_COMMENT" ]; then
+            gh pr comment "$PR_NUMBER" --body "🔗 **Stack detected!** This PR is part of a stack. The PR description has been updated to show the stack hierarchy."
+          fi

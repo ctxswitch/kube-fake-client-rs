@@ -1,0 +1,56 @@
+[package]
+name = "kube-fake-client"
+version = "0.1.0"
+edition = "2021"
+authors = ["Rob Lyon <rob@ctxswitch.com>"]
+description = "An implimentation of controller-runtime's fake client for rust"
+license = "Apache-2.0"
+repository = "https://github.com/ctxswitch/kube-fake-client-rs"
+
+[lib]
+name = "kube_fake_client"
+path = "src/lib.rs"
+
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "controller"
+path = "examples/controller.rs"
+
+[[example]]
+name = "custom_resource"
+path = "examples/custom_resource.rs"
+
+[[example]]
+name = "fixture_loading"
+path = "examples/fixture_loading.rs"
+
+[[example]]
+name = "status_controller"
+path = "examples/status_controller.rs"
+
+[dependencies]
+kube = { version = "0.97", features = ["client", "derive"] }
+k8s-openapi = { version = "0.23", features = ["v1_31"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+schemars = "0.8"
+tokio = { version = "1.0", features = ["full", "sync"] }
+thiserror = "2.0"
+async-trait = "0.1"
+json-patch = "3.0"
+tracing = "0.1"
+uuid = { version = "1.0", features = ["v4"] }
+chrono = "0.4"
+rand = "0.8"
+tower = "0.5"
+http = "1.0"
+http-body-util = "0.1"
+bytes = "1.0"
+futures = "0.3"
+
+[dev-dependencies]
+tokio-test = "0.4"
