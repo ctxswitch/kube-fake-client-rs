@@ -82,6 +82,30 @@ You can manually update all open PRs:
 3. Select the branch (usually `main`)
 4. Click "Run workflow"
 
+### Dependabot Auto-Merge (`dependabot-auto-merge.yml`)
+
+Automatically merges Dependabot PRs after CI passes.
+
+**Triggers:**
+- When a PR from dependabot is opened, synchronized, or reopened
+- After the CI workflow completes
+
+**What it does:**
+1. Verifies the PR author is `dependabot[bot]`
+2. Waits for all CI checks to pass
+3. Auto-merges the PR using squash merge
+4. Uses the PR title as the commit message
+
+**Requirements:**
+- CI workflow must pass
+- PR must be in a mergeable state
+- No merge conflicts
+
+**Benefits:**
+- Keeps dependencies up-to-date automatically
+- Reduces manual maintenance overhead
+- Ensures all tests pass before merging
+
 ## Setup Instructions
 
 ### Required Secrets
@@ -110,6 +134,7 @@ The workflows require the following permissions (configured in each workflow fil
 - **CI**: `contents: read`
 - **Release**: `contents: write`, `pull-requests: write`
 - **Update PR Stack**: `pull-requests: write`, `contents: read`
+- **Dependabot Auto-Merge**: `pull-requests: write`, `contents: write`
 
 ## Release Process
 
