@@ -114,6 +114,21 @@ tag: ## Create a git tag for the current version
 	git tag -a "v$$VERSION" -m "Release v$$VERSION"; \
 	echo "Tag created. Push with: git push origin v$$VERSION"
 
+changelog: ## Generate CHANGELOG.md from git commits
+	@command -v git-cliff >/dev/null 2>&1 || { echo "Installing git-cliff..."; cargo install git-cliff; }
+	git-cliff --output CHANGELOG.md
+	@echo "✓ Generated CHANGELOG.md"
+
+changelog-unreleased: ## Show unreleased changes
+	@command -v git-cliff >/dev/null 2>&1 || { echo "Installing git-cliff..."; cargo install git-cliff; }
+	git-cliff --unreleased
+
+changelog-tag: ## Generate changelog for the current version tag
+	@VERSION=$$(cargo pkgid | cut -d# -f2); \
+	command -v git-cliff >/dev/null 2>&1 || { echo "Installing git-cliff..."; cargo install git-cliff; }; \
+	git-cliff --latest --tag "v$$VERSION" --output RELEASE_NOTES.md; \
+	echo "✓ Generated RELEASE_NOTES.md for v$$VERSION"
+
 bench: ## Run benchmarks
 	cargo bench
 
