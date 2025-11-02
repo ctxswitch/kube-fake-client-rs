@@ -180,4 +180,20 @@ mod tests {
         let all_list = tracker.list(&gvr, None).unwrap();
         assert_eq!(all_list.len(), 3);
     }
+
+    #[test]
+    fn test_list_empty_returns_empty_list() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+
+        // List when no objects of this type exist should return empty list, not error
+        let result = tracker.list(&gvr, Some("default"));
+        assert!(result.is_ok(), "List should succeed with empty result");
+        assert_eq!(result.unwrap().len(), 0, "List should return empty vector");
+
+        // Same for cluster-wide list
+        let result = tracker.list(&gvr, None);
+        assert!(result.is_ok(), "Cluster-wide list should succeed with empty result");
+        assert_eq!(result.unwrap().len(), 0, "List should return empty vector");
+    }
 }

@@ -29,6 +29,14 @@ impl GVR {
             resource: resource.into(),
         }
     }
+
+    pub fn not_found_error(&self, namespace: &str, name: &str) -> Error {
+        Error::NotFound {
+            kind: self.resource.clone(),
+            name: name.to_string(),
+            namespace: namespace.to_string(),
+        }
+    }
 }
 
 #[allow(clippy::upper_case_acronyms)]
@@ -162,7 +170,7 @@ impl ObjectTracker {
 
         if self.get(gvr, namespace, &name).is_ok() {
             return Err(Error::AlreadyExists {
-                kind: gvk.kind.clone(),
+                kind: gvr.resource.clone(),
                 name: name.clone(),
                 namespace: namespace.to_string(),
             });
@@ -196,23 +204,17 @@ impl ObjectTracker {
         trace!("Getting object: {:?} {}/{}", gvr, namespace, name);
 
         let objects = self.objects.read().unwrap();
-        let gvr_objects = objects.get(gvr).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: name.to_string(),
-            namespace: namespace.to_string(),
-        })?;
+        let gvr_objects = objects
+            .get(gvr)
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
-        let ns_objects = gvr_objects.get(namespace).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: name.to_string(),
-            namespace: namespace.to_string(),
-        })?;
+        let ns_objects = gvr_objects
+            .get(namespace)
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
-        let stored = ns_objects.get(name).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: name.to_string(),
-            namespace: namespace.to_string(),
-        })?;
+        let stored = ns_objects
+            .get(name)
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
         Ok(stored.data.clone())
     }
@@ -287,19 +289,13 @@ impl ObjectTracker {
         };
 
         let mut objects = self.objects.write().unwrap();
-        let gvr_objects = objects.get_mut(gvr).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: name.to_string(),
-            namespace: namespace.to_string(),
-        })?;
+        let gvr_objects = objects
+            .get_mut(gvr)
+            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
 
         let ns_objects = gvr_objects
             .get_mut(namespace)
-            .ok_or_else(|| Error::NotFound {
-                kind: gvr.resource.clone(),
-                name: name.to_string(),
-                namespace: namespace.to_string(),
-            })?;
+            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
 
         ns_objects.insert(name.clone(), stored);
 
@@ -311,25 +307,17 @@ impl ObjectTracker {
         trace!("Deleting object: {:?} {}/{}", gvr, namespace, name);
 
         let mut objects = self.objects.write().unwrap();
-        let gvr_objects = objects.get_mut(gvr).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: name.to_string(),
-            namespace: namespace.to_string(),
-        })?;
+        let gvr_objects = objects
+            .get_mut(gvr)
+            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
 
         let ns_objects = gvr_objects
             .get_mut(namespace)
-            .ok_or_else(|| Error::NotFound {
-                kind: gvr.resource.clone(),
-                name: name.to_string(),
-                namespace: namespace.to_string(),
-            })?;
+            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
 
-        let stored = ns_objects.remove(name).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: name.to_string(),
-            namespace: namespace.to_string(),
-        })?;
+        let stored = ns_objects
+            .remove(name)
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
         debug!("Deleted object: {}/{}", namespace, name);
         Ok(stored.data)
@@ -339,30 +327,23 @@ impl ObjectTracker {
         trace!("Listing objects: {:?} in namespace: {:?}", gvr, namespace);
 
         let objects = self.objects.read().unwrap();
-        let gvr_objects = objects.get(gvr).ok_or_else(|| Error::NotFound {
-            kind: gvr.resource.clone(),
-            name: "".to_string(),
-            namespace: namespace.unwrap_or("").to_string(),
-        })?;
 
-        let mut result = Vec::new();
+        // If no objects of this type exist, return empty list instead of NotFound error
+        // This matches Kubernetes API behavior
+        let Some(gvr_objects) = objects.get(gvr) else {
+            return Ok(Vec::new());
+        };
 
-        match namespace {
-            Some(ns) => {
-                if let Some(ns_objects) = gvr_objects.get(ns) {
-                    for stored in ns_objects.values() {
-                        result.push(stored.data.clone());
-                    }
-                }
-            }
-            None => {
-                for ns_objects in gvr_objects.values() {
-                    for stored in ns_objects.values() {
-                        result.push(stored.data.clone());
-                    }
-                }
-            }
-        }
+        let result = match namespace {
+            Some(ns) => gvr_objects
+                .get(ns)
+                .map(|objs| objs.values().map(|s| s.data.clone()).collect())
+                .unwrap_or_default(),
+            None => gvr_objects
+                .values()
+                .flat_map(|objs| objs.values().map(|s| s.data.clone()))
+                .collect(),
+        };
 
         Ok(result)
     }

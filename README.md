@@ -18,12 +18,15 @@ kube-fake-client = "0.1"
 - **Status subresources** - Separate spec and status updates like real Kubernetes
 - **Label and field selectors** - Filter resources with custom indexes
 - **Namespace isolation** - Proper multi-namespace support
+- **Cluster-scoped resources** - Support for Nodes, ClusterRoles, and other cluster-wide resources
 - **Resource version tracking** - Automatic versioning and conflict detection
 - **YAML fixtures** - Load test data from files
 - **Custom resources** - Works with CRDs and custom types
 - **Interceptors** - Inject custom behavior for error simulation and validation
 
 ## Usage
+
+### Namespaced Resources
 
 ```rust
 use kube_fake_client::ClientBuilder;
@@ -82,6 +85,36 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
         updated.metadata.labels.as_ref().unwrap().get("managed-by"),
         Some(&"pod-controller".to_string())
     );
+
+    Ok(())
+}
+```
+
+### Cluster-Scoped Resources
+
+```rust
+use kube_fake_client::ClientBuilder;
+use k8s_openapi::api::core::v1::Node;
+use kube::api::{Api, PostParams, ListParams};
+
+#[tokio::test]
+async fn test_node_management() -> Result<(), Box<dyn std::error::Error>> {
+    let client = ClientBuilder::new().build().await?;
+    let nodes: Api<Node> = Api::all(client);
+
+    // Create nodes
+    for i in 1..=3 {
+        let mut node = Node::default();
+        node.metadata.name = Some(format!("worker-{}", i));
+        nodes.create(&PostParams::default(), &node).await?;
+    }
+
+    // List all nodes
+    let node_list = nodes.list(&ListParams::default()).await?;
+    assert_eq!(node_list.items.len(), 3);
+
+    // Cluster-scoped resources have no namespace
+    assert!(node_list.items[0].metadata.namespace.is_none());
 
     Ok(())
 }

@@ -678,6 +678,7 @@ dependencies = [
  "derive_more",
  "form_urlencoded",
  "http",
+ "json-patch",
  "k8s-openapi",
  "schemars",
  "serde",
