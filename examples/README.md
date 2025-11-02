@@ -2,6 +2,7 @@
 
 ## Available Examples
 
+- **basic_usage.rs** - Basic CRUD operations with namespaced and cluster-scoped resources
 - **controller.rs** - Pod controller with testing
 - **status_controller.rs** - Deployment status controller using status subresource
 - **custom_resource.rs** - Using custom resources (CRDs)

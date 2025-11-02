@@ -1,6 +1,6 @@
-//! Basic kube::Api operations
+//! Basic kube::Api operations with both namespaced and cluster-scoped resources
 
-use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
+use k8s_openapi::api::core::v1::{Container, Node, Pod, PodSpec};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube_fake_client::ClientBuilder;
 use serde_json::json;
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    let pods: Api<Pod> = Api::namespaced(client, "default");
+    let pods: Api<Pod> = Api::namespaced(client.clone(), "default");
 
     let pod_list = pods.list(&ListParams::default()).await?;
     println!("Initial pods: {}", pod_list.items.len());
@@ -97,6 +97,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let final_list = pods.list(&ListParams::default()).await?;
     println!("Remaining pods: {}", final_list.items.len());
+
+    // Cluster-scoped resource operations
+    println!("\n=== Cluster-Scoped Resources (Nodes) ===\n");
+
+    let nodes: Api<Node> = Api::all(client);
+
+    // Create nodes
+    println!("Creating nodes...");
+    for i in 1..=3 {
+        let mut node = Node::default();
+        node.metadata.name = Some(format!("worker-{}", i));
+        let mut labels = BTreeMap::new();
+        labels.insert("role".to_string(), "worker".to_string());
+        labels.insert("zone".to_string(), format!("zone-{}", (i % 2) + 1));
+        node.metadata.labels = Some(labels);
+        nodes.create(&PostParams::default(), &node).await?;
+    }
+
+    let node_list = nodes.list(&ListParams::default()).await?;
+    println!("Created nodes: {}", node_list.items.len());
+    for node in &node_list.items {
+        println!(
+            "  - {} (namespace: {:?})",
+            node.metadata.name.as_ref().unwrap(),
+            node.metadata.namespace
+        );
+    }
+
+    // Filter nodes by label
+    let zone1_nodes = nodes
+        .list(&ListParams::default().labels("zone=zone-1"))
+        .await?;
+    println!("\nNodes in zone-1: {}", zone1_nodes.items.len());
+
+    // Patch a node
+    let node_patch = json!({
+        "metadata": {
+            "labels": {
+                "maintenance": "true"
+            }
+        }
+    });
+    let patched_node = nodes
+        .patch(
+            "worker-1",
+            &PatchParams::default(),
+            &Patch::Merge(&node_patch),
+        )
+        .await?;
+    println!("\nPatched worker-1 with maintenance label");
+    println!("Labels: {:?}", patched_node.metadata.labels);
+
+    // Delete a node
+    nodes.delete("worker-3", &DeleteParams::default()).await?;
+    println!("\nDeleted worker-3");
+
+    let remaining_nodes = nodes.list(&ListParams::default()).await?;
+    println!("Remaining nodes: {}", remaining_nodes.items.len());
 
     Ok(())
 }

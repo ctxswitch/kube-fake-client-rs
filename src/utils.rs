@@ -19,7 +19,11 @@ pub fn should_be_deleted(meta: &ObjectMeta) -> bool {
 }
 
 pub fn ensure_metadata(meta: &mut ObjectMeta, namespace: &str) {
-    if meta.namespace.is_none() && !namespace.is_empty() {
+    // For cluster-scoped resources (empty namespace), ensure namespace is not set
+    // For namespaced resources, set namespace if not present
+    if namespace.is_empty() {
+        meta.namespace = None;
+    } else if meta.namespace.is_none() {
         meta.namespace = Some(namespace.to_string());
     }
     if meta.creation_timestamp.is_none() {
