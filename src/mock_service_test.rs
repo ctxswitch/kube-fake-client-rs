@@ -194,8 +194,10 @@ mod tests {
             .unwrap();
 
         // Annotations should be removed
-        assert!(patched.metadata.annotations.is_none() ||
-                patched.metadata.annotations.as_ref().unwrap().is_empty());
+        assert!(
+            patched.metadata.annotations.is_none()
+                || patched.metadata.annotations.as_ref().unwrap().is_empty()
+        );
 
         // Labels should still exist
         assert!(patched.metadata.labels.is_some());
@@ -324,7 +326,11 @@ mod tests {
         let json_patch: json_patch::Patch = serde_json::from_value(json_patch_value).unwrap();
 
         let patched1: Pod = pods
-            .patch("pod-json", &PatchParams::default(), &Patch::Json::<Pod>(json_patch))
+            .patch(
+                "pod-json",
+                &PatchParams::default(),
+                &Patch::Json::<Pod>(json_patch),
+            )
             .await
             .unwrap();
 

@@ -7,14 +7,14 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error("Resource not found: {kind} {name} in namespace {namespace}")]
     NotFound {
-        kind: String,  // resource name (lowercase plural, e.g., "pods")
+        kind: String, // resource name (lowercase plural, e.g., "pods")
         name: String,
         namespace: String,
     },
 
     #[error("Resource already exists: {kind} {name} in namespace {namespace}")]
     AlreadyExists {
-        kind: String,  // resource name (lowercase plural, e.g., "pods")
+        kind: String, // resource name (lowercase plural, e.g., "pods")
         name: String,
         namespace: String,
     },

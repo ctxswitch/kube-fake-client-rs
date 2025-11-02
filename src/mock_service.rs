@@ -299,7 +299,10 @@ impl MockService {
             "GET" => self.handle_get(&path, query.as_deref()).await,
             "POST" => self.handle_post(&path, body_bytes).await,
             "PUT" => self.handle_put(&path, body_bytes).await,
-            "PATCH" => self.handle_patch(&path, body_bytes, content_type.as_deref()).await,
+            "PATCH" => {
+                self.handle_patch(&path, body_bytes, content_type.as_deref())
+                    .await
+            }
             "DELETE" => self.handle_delete(&path).await,
             _ => Self::error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
         }
@@ -357,7 +360,9 @@ impl MockService {
 
                     match get_interceptor(ctx) {
                         Ok(Some(result)) => result,
-                        Ok(None) => handle_error!(self.client.tracker().get(&gvr, namespace, &name)),
+                        Ok(None) => {
+                            handle_error!(self.client.tracker().get(&gvr, namespace, &name))
+                        }
                         Err(e) => {
                             return Self::error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -387,7 +392,10 @@ impl MockService {
 
                     match list_interceptor(ctx) {
                         Ok(Some(result)) => result,
-                        Ok(None) => handle_error!(self.client.tracker().list(&gvr, parsed.namespace.as_deref())),
+                        Ok(None) => handle_error!(self
+                            .client
+                            .tracker()
+                            .list(&gvr, parsed.namespace.as_deref())),
                         Err(e) => {
                             return Self::error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -396,10 +404,16 @@ impl MockService {
                         }
                     }
                 } else {
-                    handle_error!(self.client.tracker().list(&gvr, parsed.namespace.as_deref()))
+                    handle_error!(self
+                        .client
+                        .tracker()
+                        .list(&gvr, parsed.namespace.as_deref()))
                 }
             } else {
-                handle_error!(self.client.tracker().list(&gvr, parsed.namespace.as_deref()))
+                handle_error!(self
+                    .client
+                    .tracker()
+                    .list(&gvr, parsed.namespace.as_deref()))
             };
 
             // Apply label selector filtering if specified
@@ -479,10 +493,7 @@ impl MockService {
 
                 match create_interceptor(ctx) {
                     Ok(Some(result)) => result,
-                    Ok(None) => self
-                        .client
-                        .tracker()
-                        .create(&gvr, &gvk, obj, namespace)?,
+                    Ok(None) => self.client.tracker().create(&gvr, &gvk, obj, namespace)?,
                     Err(e) => {
                         return Self::error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -491,14 +502,10 @@ impl MockService {
                     }
                 }
             } else {
-                self.client
-                    .tracker()
-                    .create(&gvr, &gvk, obj, namespace)?
+                self.client.tracker().create(&gvr, &gvk, obj, namespace)?
             }
         } else {
-            self.client
-                .tracker()
-                .create(&gvr, &gvk, obj, namespace)?
+            self.client.tracker().create(&gvr, &gvk, obj, namespace)?
         };
 
         Self::success_response(created)
@@ -553,13 +560,10 @@ impl MockService {
 
                     match replace_status_interceptor(ctx) {
                         Ok(Some(result)) => result,
-                        Ok(None) => self.client.tracker().update(
-                            &gvr,
-                            &gvk,
-                            obj,
-                            namespace,
-                            true,
-                        )?,
+                        Ok(None) => self
+                            .client
+                            .tracker()
+                            .update(&gvr, &gvk, obj, namespace, true)?,
                         Err(e) => {
                             return Self::error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -583,11 +587,10 @@ impl MockService {
 
                 match replace_interceptor(ctx) {
                     Ok(Some(result)) => result,
-                    Ok(None) => {
-                        self.client
-                            .tracker()
-                            .update(&gvr, &gvk, obj, namespace, false)?
-                    }
+                    Ok(None) => self
+                        .client
+                        .tracker()
+                        .update(&gvr, &gvk, obj, namespace, false)?,
                     Err(e) => {
                         return Self::error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -648,17 +651,12 @@ impl MockService {
                     match patch_status_interceptor(ctx) {
                         Ok(Some(result)) => result,
                         Ok(None) => {
-                            let mut existing =
-                                self.client.tracker().get(&gvr, namespace, &name)?;
+                            let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
                             Self::apply_patch(&mut existing, &patch, patch_type)?;
                             let gvk = extract_gvk(&existing)?;
-                            self.client.tracker().update(
-                                &gvr,
-                                &gvk,
-                                existing,
-                                namespace,
-                                true,
-                            )?
+                            self.client
+                                .tracker()
+                                .update(&gvr, &gvk, existing, namespace, true)?
                         }
                         Err(e) => {
                             return Self::error_response(
@@ -688,17 +686,12 @@ impl MockService {
                 match patch_interceptor(ctx) {
                     Ok(Some(result)) => result,
                     Ok(None) => {
-                        let mut existing =
-                            self.client.tracker().get(&gvr, namespace, &name)?;
+                        let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
                         Self::apply_patch(&mut existing, &patch, patch_type)?;
                         let gvk = extract_gvk(&existing)?;
-                        self.client.tracker().update(
-                            &gvr,
-                            &gvk,
-                            existing,
-                            namespace,
-                            false,
-                        )?
+                        self.client
+                            .tracker()
+                            .update(&gvr, &gvk, existing, namespace, false)?
                     }
                     Err(e) => {
                         return Self::error_response(
@@ -754,10 +747,7 @@ impl MockService {
 
                 match delete_interceptor(ctx) {
                     Ok(Some(result)) => result,
-                    Ok(None) => self
-                        .client
-                        .tracker()
-                        .delete(&gvr, namespace, &name)?,
+                    Ok(None) => self.client.tracker().delete(&gvr, namespace, &name)?,
                     Err(e) => {
                         return Self::error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -766,14 +756,10 @@ impl MockService {
                     }
                 }
             } else {
-                self.client
-                    .tracker()
-                    .delete(&gvr, namespace, &name)?
+                self.client.tracker().delete(&gvr, namespace, &name)?
             }
         } else {
-            self.client
-                .tracker()
-                .delete(&gvr, namespace, &name)?
+            self.client.tracker().delete(&gvr, namespace, &name)?
         };
 
         Self::success_response(deleted)

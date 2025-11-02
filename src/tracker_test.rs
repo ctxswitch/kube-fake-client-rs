@@ -193,7 +193,10 @@ mod tests {
 
         // Same for cluster-wide list
         let result = tracker.list(&gvr, None);
-        assert!(result.is_ok(), "Cluster-wide list should succeed with empty result");
+        assert!(
+            result.is_ok(),
+            "Cluster-wide list should succeed with empty result"
+        );
         assert_eq!(result.unwrap().len(), 0, "List should return empty vector");
     }
 }

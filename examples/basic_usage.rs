@@ -118,7 +118,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_list = nodes.list(&ListParams::default()).await?;
     println!("Created nodes: {}", node_list.items.len());
     for node in &node_list.items {
-        println!("  - {} (namespace: {:?})",
+        println!(
+            "  - {} (namespace: {:?})",
             node.metadata.name.as_ref().unwrap(),
             node.metadata.namespace
         );
