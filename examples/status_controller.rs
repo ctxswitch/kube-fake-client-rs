@@ -33,6 +33,7 @@ impl DeploymentStatusController {
             observed_generation: deployment.metadata.generation,
             conditions: None,
             collision_count: None,
+            terminating_replicas: None,
         };
 
         deployment.status = Some(status);
