@@ -309,11 +309,11 @@ impl ObjectTracker {
         let mut objects = self.objects.write().unwrap();
         let gvr_objects = objects
             .get_mut(gvr)
-            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
         let ns_objects = gvr_objects
             .get_mut(namespace)
-            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
         let stored = ns_objects
             .remove(name)

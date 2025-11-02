@@ -36,6 +36,7 @@ struct ParsedPath {
 
 /// Patch types based on Content-Type header
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum PatchType {
     /// RFC 6902 JSON Patch - application/json-patch+json
     JsonPatch,
