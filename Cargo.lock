@@ -662,12 +662,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "k8s-openapi"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d13f06d5326a915becaffabdfab75051b8cdc260c2a5c06c0e90226ede89a692"
+dependencies = [
+ "base64",
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kube"
 version = "0.97.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5fd2596428f922f784ca43907c449f104d69055c811135684474143736c67ae"
 dependencies = [
- "k8s-openapi",
+ "k8s-openapi 0.23.0",
  "kube-client",
  "kube-core",
  "kube-derive",
@@ -694,7 +706,7 @@ dependencies = [
  "hyper-timeout",
  "hyper-util",
  "jsonpath-rust",
- "k8s-openapi",
+ "k8s-openapi 0.23.0",
  "kube-core",
  "pem",
  "rustls",
@@ -720,7 +732,7 @@ dependencies = [
  "chrono",
  "form_urlencoded",
  "http",
- "k8s-openapi",
+ "k8s-openapi 0.23.0",
  "schemars",
  "serde",
  "serde-value",
@@ -752,7 +764,7 @@ dependencies = [
  "http",
  "http-body-util",
  "json-patch",
- "k8s-openapi",
+ "k8s-openapi 0.26.0",
  "kube",
  "rand",
  "schemars",
