@@ -49,7 +49,7 @@ mod tests {
             .patch(
                 "test-pod",
                 &PatchParams::default(),
-                &Patch::Json::<Pod>(json_patch),
+                &Patch::<Pod>::Json(json_patch),
             )
             .await
             .unwrap();
@@ -89,7 +89,7 @@ mod tests {
             .patch(
                 "test-pod",
                 &PatchParams::default(),
-                &Patch::Json::<Pod>(json_patch),
+                &Patch::<Pod>::Json(json_patch),
             )
             .await
             .unwrap();
@@ -329,7 +329,7 @@ mod tests {
             .patch(
                 "pod-json",
                 &PatchParams::default(),
-                &Patch::Json::<Pod>(json_patch),
+                &Patch::<Pod>::Json(json_patch),
             )
             .await
             .unwrap();
@@ -407,7 +407,7 @@ mod tests {
             .patch(
                 "test-pod",
                 &PatchParams::default(),
-                &Patch::Json::<Pod>(json_patch),
+                &Patch::<Pod>::Json(json_patch),
             )
             .await
             .unwrap();
@@ -450,7 +450,7 @@ mod tests {
             .patch(
                 "test-pod",
                 &PatchParams::default(),
-                &Patch::Json::<Pod>(json_patch),
+                &Patch::<Pod>::Json(json_patch),
             )
             .await
             .unwrap();
