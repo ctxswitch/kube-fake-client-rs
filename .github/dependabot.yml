@@ -12,6 +12,9 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    ignore:
+      - dependency-name: "kube"
+        # Pinned to 0.97 due to edition2024 compatibility issues in kube 2.0
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
