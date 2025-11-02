@@ -1,0 +1,66 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    steps:
+      - name: Check if CI passed
+        id: ci-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get PR number
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            # For workflow_run events, get PR from the head branch
+            PR_NUMBER=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
+          fi
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No PR found"
+            exit 0
+          fi
+
+          # Check if all checks have passed
+          gh pr checks "$PR_NUMBER" --watch --interval 30
+
+          # Get PR details
+          PR_DATA=$(gh pr view "$PR_NUMBER" --json title,mergeable,mergeStateStatus)
+          PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
+          MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable')
+          MERGE_STATE=$(echo "$PR_DATA" | jq -r '.mergeStateStatus')
+
+          echo "pr_title=$PR_TITLE" >> $GITHUB_OUTPUT
+          echo "mergeable=$MERGEABLE" >> $GITHUB_OUTPUT
+          echo "merge_state=$MERGE_STATE" >> $GITHUB_OUTPUT
+
+      - name: Auto-merge PR
+        if: steps.ci-check.outputs.mergeable == 'MERGEABLE' && steps.ci-check.outputs.merge_state == 'CLEAN'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUMBER="${{ steps.ci-check.outputs.pr_number }}"
+          PR_TITLE="${{ steps.ci-check.outputs.pr_title }}"
+
+          # Merge the PR using the title as commit message
+          gh pr merge "$PR_NUMBER" \
+            --squash \
+            --subject "$PR_TITLE" \
+            --auto
+
+          echo "✅ Auto-merged PR #$PR_NUMBER: $PR_TITLE"
