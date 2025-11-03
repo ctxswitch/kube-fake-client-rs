@@ -14,7 +14,8 @@ updates:
       include: "scope"
     ignore:
       - dependency-name: "kube"
-        # Pinned to 0.97 due to edition2024 compatibility issues in kube 2.0
+        # Allow updates to 1.x, but block 2.x due to edition2024 compatibility issues
+        update-types: ["version-update:semver-major"]
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
