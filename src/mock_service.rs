@@ -3,6 +3,7 @@
 use crate::client::FakeClient;
 use crate::client_utils::extract_gvk;
 use crate::error::Error;
+use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
 use crate::tracker::GVR;
 use bytes::Bytes;
@@ -147,18 +148,24 @@ impl MockService {
         if let Some(query_str) = query {
             for pair in query_str.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
+                    // URL-decode the value
+                    let decoded_value =
+                        urlencoding::decode(value).unwrap_or(std::borrow::Cow::Borrowed(value));
+
                     match key {
-                        "labelSelector" => params.label_selector = Some(value.to_string()),
-                        "fieldSelector" => params.field_selector = Some(value.to_string()),
+                        "labelSelector" => params.label_selector = Some(decoded_value.to_string()),
+                        "fieldSelector" => params.field_selector = Some(decoded_value.to_string()),
                         "limit" => {
-                            if let Ok(limit_val) = value.parse::<u32>() {
+                            if let Ok(limit_val) = decoded_value.parse::<u32>() {
                                 params.limit = Some(limit_val);
                             }
                         }
-                        "continue" => params.continue_token = Some(value.to_string()),
-                        "resourceVersion" => params.resource_version = Some(value.to_string()),
+                        "continue" => params.continue_token = Some(decoded_value.to_string()),
+                        "resourceVersion" => {
+                            params.resource_version = Some(decoded_value.to_string())
+                        }
                         "timeoutSeconds" => {
-                            if let Ok(timeout) = value.parse::<u32>() {
+                            if let Ok(timeout) = decoded_value.parse::<u32>() {
                                 params.timeout = Some(timeout);
                             }
                         }
@@ -200,28 +207,22 @@ impl MockService {
         }
     }
 
-    /// Check if object matches field selector (simple equality-based matching)
+    /// Check if object matches field selector (uses pre-registered fields)
     fn matches_field_selector(obj: &Value, selector: &str) -> bool {
+        // Extract kind from object to determine which fields are available
+        let kind = obj.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+
         for requirement in selector.split(',') {
             let requirement = requirement.trim();
             if let Some((field, expected_value)) = requirement.split_once('=') {
                 let field = field.trim_end_matches('=');
                 let expected_value = expected_value.trim();
 
-                // Support common field selectors
-                let actual_value = match field {
-                    "metadata.name" => obj
-                        .get("metadata")
-                        .and_then(|m| m.get("name"))
-                        .and_then(|v| v.as_str()),
-                    "metadata.namespace" => obj
-                        .get("metadata")
-                        .and_then(|m| m.get("namespace"))
-                        .and_then(|v| v.as_str()),
-                    _ => None, // Unknown field selector
-                };
+                // Try to extract the field value using pre-registered fields
+                let values = extract_preregistered_field_value(obj, field, kind);
 
-                if actual_value != Some(expected_value) {
+                // Check if any of the values match the expected value
+                if !values.is_some_and(|v| v.iter().any(|val| val == expected_value)) {
                     return false;
                 }
             }

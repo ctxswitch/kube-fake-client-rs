@@ -62,6 +62,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("\nPods with app=frontend: {}", filtered.items.len());
 
+    // Field selector examples (using pre-registered fields)
+    println!("\n=== Field Selector Examples ===\n");
+
+    // Universal field selectors (work for all resource types)
+    let by_name = pods
+        .list(&ListParams::default().fields("metadata.name=nginx"))
+        .await?;
+    println!(
+        "Pods filtered by metadata.name=nginx: {}",
+        by_name.items.len()
+    );
+    for pod in &by_name.items {
+        println!("  - {}", pod.metadata.name.as_ref().unwrap());
+    }
+
+    // Create a pod with node name for Pod-specific field selector example
+    let mut scheduled_pod = Pod::default();
+    scheduled_pod.metadata.name = Some("scheduled-pod".to_string());
+    scheduled_pod.spec = Some(PodSpec {
+        node_name: Some("worker-node-1".to_string()),
+        containers: vec![Container {
+            name: "app".to_string(),
+            image: Some("app:latest".to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    pods.create(&PostParams::default(), &scheduled_pod).await?;
+
+    // Pod-specific pre-registered field selector (spec.nodeName)
+    let by_node = pods
+        .list(&ListParams::default().fields("spec.nodeName=worker-node-1"))
+        .await?;
+    println!("\nPods scheduled on worker-node-1: {}", by_node.items.len());
+    for pod in &by_node.items {
+        println!(
+            "  - {} (node: {})",
+            pod.metadata.name.as_ref().unwrap(),
+            pod.spec
+                .as_ref()
+                .and_then(|s| s.node_name.as_ref())
+                .unwrap_or(&"none".to_string())
+        );
+    }
+
+    // Update pod status for status.phase field selector example
+    let status_patch = json!({
+        "status": {
+            "phase": "Running"
+        }
+    });
+    pods.patch_status(
+        "nginx",
+        &PatchParams::default(),
+        &Patch::Merge(&status_patch),
+    )
+    .await?;
+
+    // Pod-specific pre-registered field selector (status.phase)
+    let running_pods = pods
+        .list(&ListParams::default().fields("status.phase=Running"))
+        .await?;
+    println!("\nPods in Running phase: {}", running_pods.items.len());
+
+    // Multiple field selectors combined
+    let combined = pods
+        .list(&ListParams::default().fields("metadata.name=nginx,status.phase=Running"))
+        .await?;
+    println!(
+        "\nPods with name=nginx AND phase=Running: {}",
+        combined.items.len()
+    );
+
     let patch = json!({
         "metadata": {
             "labels": {

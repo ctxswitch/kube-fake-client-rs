@@ -700,4 +700,273 @@ mod tests {
         // The namespace should NOT be set (cluster-scoped resources don't have namespaces)
         assert_eq!(created.metadata.namespace, None);
     }
+
+    // ============================================================================
+    // Field Selector Tests (through HTTP layer)
+    // ============================================================================
+
+    /// Test field selector metadata.name (universal field)
+    #[tokio::test]
+    async fn test_field_selector_metadata_name_http() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create multiple pods
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pods.create(&PostParams::default(), &pod).await.unwrap();
+        }
+
+        // Filter by metadata.name
+        let params = kube::api::ListParams::default().fields("metadata.name=pod-2");
+        let filtered = pods.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(filtered.items[0].metadata.name, Some("pod-2".to_string()));
+    }
+
+    /// Test field selector metadata.namespace (universal field)
+    #[tokio::test]
+    async fn test_field_selector_metadata_namespace_http() {
+        let client = ClientBuilder::new().build().await.unwrap();
+
+        // Create pods in different namespaces
+        let pods_default: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let pods_system: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "kube-system");
+
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("pod-1".to_string());
+        pods_default
+            .create(&PostParams::default(), &pod1)
+            .await
+            .unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("pod-2".to_string());
+        pods_system
+            .create(&PostParams::default(), &pod2)
+            .await
+            .unwrap();
+
+        // List all pods with field selector for namespace
+        let pods_all: kube::Api<Pod> = kube::Api::all(client);
+        let params = kube::api::ListParams::default().fields("metadata.namespace=default");
+        let filtered = pods_all.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(
+            filtered.items[0].metadata.namespace,
+            Some("default".to_string())
+        );
+    }
+
+    /// Test field selector spec.nodeName (Pod-specific pre-registered field)
+    #[tokio::test]
+    async fn test_field_selector_spec_nodename_http() {
+        use k8s_openapi::api::core::v1::{Container, PodSpec};
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create pods with different node names
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("pod-1".to_string());
+        pod1.spec = Some(PodSpec {
+            node_name: Some("node-1".to_string()),
+            containers: vec![Container {
+                name: "app".to_string(),
+                image: Some("app:latest".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        pods.create(&PostParams::default(), &pod1).await.unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("pod-2".to_string());
+        pod2.spec = Some(PodSpec {
+            node_name: Some("node-2".to_string()),
+            containers: vec![Container {
+                name: "app".to_string(),
+                image: Some("app:latest".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        pods.create(&PostParams::default(), &pod2).await.unwrap();
+
+        // Filter by spec.nodeName
+        let params = kube::api::ListParams::default().fields("spec.nodeName=node-1");
+        let filtered = pods.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(filtered.items[0].metadata.name, Some("pod-1".to_string()));
+        assert_eq!(
+            filtered.items[0]
+                .spec
+                .as_ref()
+                .and_then(|s| s.node_name.as_ref())
+                .map(|s| s.as_str()),
+            Some("node-1")
+        );
+    }
+
+    /// Test field selector status.phase (Pod-specific pre-registered field)
+    #[tokio::test]
+    async fn test_field_selector_status_phase_http() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create pods and set their phases via status subresource
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("pod-1".to_string());
+        pods.create(&PostParams::default(), &pod1).await.unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("pod-2".to_string());
+        pods.create(&PostParams::default(), &pod2).await.unwrap();
+
+        // Update status to set phase
+        let status_patch1 = json!({
+            "status": {
+                "phase": "Running"
+            }
+        });
+        pods.patch_status(
+            "pod-1",
+            &kube::api::PatchParams::default(),
+            &kube::api::Patch::Merge(&status_patch1),
+        )
+        .await
+        .unwrap();
+
+        let status_patch2 = json!({
+            "status": {
+                "phase": "Pending"
+            }
+        });
+        pods.patch_status(
+            "pod-2",
+            &kube::api::PatchParams::default(),
+            &kube::api::Patch::Merge(&status_patch2),
+        )
+        .await
+        .unwrap();
+
+        // Filter by status.phase
+        let params = kube::api::ListParams::default().fields("status.phase=Running");
+        let filtered = pods.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(filtered.items[0].metadata.name, Some("pod-1".to_string()));
+        assert_eq!(
+            filtered.items[0]
+                .status
+                .as_ref()
+                .and_then(|s| s.phase.as_ref())
+                .map(|s| s.as_str()),
+            Some("Running")
+        );
+    }
+
+    /// Test multiple field selectors combined
+    #[tokio::test]
+    async fn test_field_selector_multiple_fields_http() {
+        use k8s_openapi::api::core::v1::{Container, PodSpec};
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create multiple pods
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("target-pod".to_string());
+        pod1.spec = Some(PodSpec {
+            node_name: Some("node-1".to_string()),
+            containers: vec![Container {
+                name: "app".to_string(),
+                image: Some("app:latest".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        pods.create(&PostParams::default(), &pod1).await.unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("target-pod-2".to_string());
+        pod2.spec = Some(PodSpec {
+            node_name: Some("node-2".to_string()),
+            containers: vec![Container {
+                name: "app".to_string(),
+                image: Some("app:latest".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        pods.create(&PostParams::default(), &pod2).await.unwrap();
+
+        let mut pod3 = Pod::default();
+        pod3.metadata.name = Some("other-pod".to_string());
+        pod3.spec = Some(PodSpec {
+            node_name: Some("node-1".to_string()),
+            containers: vec![Container {
+                name: "app".to_string(),
+                image: Some("app:latest".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        pods.create(&PostParams::default(), &pod3).await.unwrap();
+
+        // Filter by both metadata.name AND spec.nodeName
+        let params = kube::api::ListParams::default()
+            .fields("metadata.name=target-pod,spec.nodeName=node-1");
+        let filtered = pods.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(
+            filtered.items[0].metadata.name,
+            Some("target-pod".to_string())
+        );
+    }
+
+    /// Test field selector with no matches
+    #[tokio::test]
+    async fn test_field_selector_no_match_http() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        // Filter by non-existent name
+        let params = kube::api::ListParams::default().fields("metadata.name=nonexistent");
+        let filtered = pods.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 0);
+    }
+
+    /// Test field selector on cluster-scoped resources
+    #[tokio::test]
+    async fn test_field_selector_cluster_scoped_http() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let nodes: kube::Api<Node> = kube::Api::all(client);
+
+        // Create nodes
+        for i in 1..=3 {
+            let mut node = Node::default();
+            node.metadata.name = Some(format!("node-{}", i));
+            nodes.create(&PostParams::default(), &node).await.unwrap();
+        }
+
+        // Filter by metadata.name (universal field)
+        let params = kube::api::ListParams::default().fields("metadata.name=node-2");
+        let filtered = nodes.list(&params).await.unwrap();
+
+        assert_eq!(filtered.items.len(), 1);
+        assert_eq!(filtered.items[0].metadata.name, Some("node-2".to_string()));
+        assert_eq!(filtered.items[0].metadata.namespace, None);
+    }
 }
