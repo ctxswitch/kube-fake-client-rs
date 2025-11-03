@@ -149,7 +149,8 @@ impl MockService {
             for pair in query_str.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
                     // URL-decode the value
-                    let decoded_value = urlencoding::decode(value).unwrap_or(std::borrow::Cow::Borrowed(value));
+                    let decoded_value =
+                        urlencoding::decode(value).unwrap_or(std::borrow::Cow::Borrowed(value));
 
                     match key {
                         "labelSelector" => params.label_selector = Some(decoded_value.to_string()),
@@ -160,7 +161,9 @@ impl MockService {
                             }
                         }
                         "continue" => params.continue_token = Some(decoded_value.to_string()),
-                        "resourceVersion" => params.resource_version = Some(decoded_value.to_string()),
+                        "resourceVersion" => {
+                            params.resource_version = Some(decoded_value.to_string())
+                        }
                         "timeoutSeconds" => {
                             if let Ok(timeout) = decoded_value.parse::<u32>() {
                                 params.timeout = Some(timeout);
@@ -207,10 +210,7 @@ impl MockService {
     /// Check if object matches field selector (uses pre-registered fields)
     fn matches_field_selector(obj: &Value, selector: &str) -> bool {
         // Extract kind from object to determine which fields are available
-        let kind = obj
-            .get("kind")
-            .and_then(|k| k.as_str())
-            .unwrap_or("");
+        let kind = obj.get("kind").and_then(|k| k.as_str()).unwrap_or("");
 
         for requirement in selector.split(',') {
             let requirement = requirement.trim();
@@ -222,7 +222,7 @@ impl MockService {
                 let values = extract_preregistered_field_value(obj, field, kind);
 
                 // Check if any of the values match the expected value
-                if !values.map_or(false, |v| v.iter().any(|val| val == expected_value)) {
+                if !values.is_some_and(|v| v.iter().any(|val| val == expected_value)) {
                     return false;
                 }
             }

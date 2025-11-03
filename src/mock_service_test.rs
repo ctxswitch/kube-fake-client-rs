@@ -723,10 +723,7 @@ mod tests {
         let filtered = pods.list(&params).await.unwrap();
 
         assert_eq!(filtered.items.len(), 1);
-        assert_eq!(
-            filtered.items[0].metadata.name,
-            Some("pod-2".to_string())
-        );
+        assert_eq!(filtered.items[0].metadata.name, Some("pod-2".to_string()));
     }
 
     /// Test field selector metadata.namespace (universal field)
@@ -740,11 +737,17 @@ mod tests {
 
         let mut pod1 = Pod::default();
         pod1.metadata.name = Some("pod-1".to_string());
-        pods_default.create(&PostParams::default(), &pod1).await.unwrap();
+        pods_default
+            .create(&PostParams::default(), &pod1)
+            .await
+            .unwrap();
 
         let mut pod2 = Pod::default();
         pod2.metadata.name = Some("pod-2".to_string());
-        pods_system.create(&PostParams::default(), &pod2).await.unwrap();
+        pods_system
+            .create(&PostParams::default(), &pod2)
+            .await
+            .unwrap();
 
         // List all pods with field selector for namespace
         let pods_all: kube::Api<Pod> = kube::Api::all(client);
@@ -798,10 +801,7 @@ mod tests {
         let filtered = pods.list(&params).await.unwrap();
 
         assert_eq!(filtered.items.len(), 1);
-        assert_eq!(
-            filtered.items[0].metadata.name,
-            Some("pod-1".to_string())
-        );
+        assert_eq!(filtered.items[0].metadata.name, Some("pod-1".to_string()));
         assert_eq!(
             filtered.items[0]
                 .spec
@@ -859,10 +859,7 @@ mod tests {
         let filtered = pods.list(&params).await.unwrap();
 
         assert_eq!(filtered.items.len(), 1);
-        assert_eq!(
-            filtered.items[0].metadata.name,
-            Some("pod-1".to_string())
-        );
+        assert_eq!(filtered.items[0].metadata.name, Some("pod-1".to_string()));
         assert_eq!(
             filtered.items[0]
                 .status
@@ -922,8 +919,8 @@ mod tests {
         pods.create(&PostParams::default(), &pod3).await.unwrap();
 
         // Filter by both metadata.name AND spec.nodeName
-        let params =
-            kube::api::ListParams::default().fields("metadata.name=target-pod,spec.nodeName=node-1");
+        let params = kube::api::ListParams::default()
+            .fields("metadata.name=target-pod,spec.nodeName=node-1");
         let filtered = pods.list(&params).await.unwrap();
 
         assert_eq!(filtered.items.len(), 1);
@@ -969,10 +966,7 @@ mod tests {
         let filtered = nodes.list(&params).await.unwrap();
 
         assert_eq!(filtered.items.len(), 1);
-        assert_eq!(
-            filtered.items[0].metadata.name,
-            Some("node-2".to_string())
-        );
+        assert_eq!(filtered.items[0].metadata.name, Some("node-2".to_string()));
         assert_eq!(filtered.items[0].metadata.namespace, None);
     }
 }

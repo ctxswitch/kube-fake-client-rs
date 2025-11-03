@@ -232,7 +232,9 @@ impl FakeClient {
                     let obj_value = serde_json::to_value(&obj)?;
 
                     // Try pre-registered fields first (no index required)
-                    let values = if let Some(preregistered_values) = extract_preregistered_field_value(&obj_value, field, &gvk.kind) {
+                    let values = if let Some(preregistered_values) =
+                        extract_preregistered_field_value(&obj_value, field, &gvk.kind)
+                    {
                         preregistered_values
                     } else if let Some(indexer) = self.get_index(gvk, field) {
                         // Fall back to custom registered index

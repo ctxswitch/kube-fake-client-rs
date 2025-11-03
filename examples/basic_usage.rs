@@ -69,7 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let by_name = pods
         .list(&ListParams::default().fields("metadata.name=nginx"))
         .await?;
-    println!("Pods filtered by metadata.name=nginx: {}", by_name.items.len());
+    println!(
+        "Pods filtered by metadata.name=nginx: {}",
+        by_name.items.len()
+    );
     for pod in &by_name.items {
         println!("  - {}", pod.metadata.name.as_ref().unwrap());
     }
@@ -97,7 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "  - {} (node: {})",
             pod.metadata.name.as_ref().unwrap(),
-            pod.spec.as_ref().and_then(|s| s.node_name.as_ref()).unwrap_or(&"none".to_string())
+            pod.spec
+                .as_ref()
+                .and_then(|s| s.node_name.as_ref())
+                .unwrap_or(&"none".to_string())
         );
     }
 
@@ -107,8 +113,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "phase": "Running"
         }
     });
-    pods.patch_status("nginx", &PatchParams::default(), &Patch::Merge(&status_patch))
-        .await?;
+    pods.patch_status(
+        "nginx",
+        &PatchParams::default(),
+        &Patch::Merge(&status_patch),
+    )
+    .await?;
 
     // Pod-specific pre-registered field selector (status.phase)
     let running_pods = pods
@@ -120,7 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let combined = pods
         .list(&ListParams::default().fields("metadata.name=nginx,status.phase=Running"))
         .await?;
-    println!("\nPods with name=nginx AND phase=Running: {}", combined.items.len());
+    println!(
+        "\nPods with name=nginx AND phase=Running: {}",
+        combined.items.len()
+    );
 
     let patch = json!({
         "metadata": {

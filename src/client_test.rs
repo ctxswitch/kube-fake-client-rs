@@ -318,10 +318,7 @@ mod tests {
 
         assert_eq!(pods.len(), 1);
         assert_eq!(pods[0].metadata.name, Some("pod-1".to_string()));
-        assert_eq!(
-            pods[0].metadata.namespace,
-            Some("default".to_string())
-        );
+        assert_eq!(pods[0].metadata.namespace, Some("default".to_string()));
     }
 
     #[test]
