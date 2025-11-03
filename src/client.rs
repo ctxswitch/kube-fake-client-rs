@@ -1,6 +1,7 @@
 //! Fake Kubernetes client for in-memory testing
 
 use crate::client_utils::{extract_gvk, pluralize};
+use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
 use crate::tracker::{ObjectTracker, GVK, GVR};
 use crate::{Error, Result};
@@ -228,19 +229,25 @@ impl FakeClient {
                     let field = field.trim_end_matches('=');
                     let expected_value = expected_value.trim();
 
-                    if let Some(indexer) = self.get_index(gvk, field) {
-                        let obj_value = serde_json::to_value(&obj)?;
-                        let values = indexer(&obj_value);
+                    let obj_value = serde_json::to_value(&obj)?;
 
-                        if !values.iter().any(|v| v == expected_value) {
-                            matches = false;
-                            break;
-                        }
+                    // Try pre-registered fields first (no index required)
+                    let values = if let Some(preregistered_values) = extract_preregistered_field_value(&obj_value, field, &gvk.kind) {
+                        preregistered_values
+                    } else if let Some(indexer) = self.get_index(gvk, field) {
+                        // Fall back to custom registered index
+                        indexer(&obj_value)
                     } else {
+                        // Field not supported
                         return Err(Error::IndexNotFound {
                             kind: format!("{:?}", gvk),
                             field: field.to_string(),
                         });
+                    };
+
+                    if !values.iter().any(|v| v == expected_value) {
+                        matches = false;
+                        break;
                     }
                 }
             }

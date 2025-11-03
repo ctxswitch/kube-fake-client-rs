@@ -48,6 +48,7 @@ mod builder;
 mod client;
 mod client_utils;
 mod error;
+mod field_selectors;
 pub mod interceptor;
 mod mock_service;
 mod tracker;

@@ -166,4 +166,180 @@ mod tests {
             .unwrap();
         assert_eq!(updated.metadata.resource_version, Some("3".to_string()));
     }
+
+    #[test]
+    fn test_field_selector_metadata_name() {
+        let client = FakeClient::new();
+
+        // Create multiple pods
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pod.metadata.namespace = Some("default".to_string());
+            client
+                .create("default", &pod, &PostParams::default())
+                .unwrap();
+        }
+
+        // Filter by metadata.name without registering an index
+        let params = ListParams::default().fields("metadata.name=pod-2");
+        let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
+
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0].metadata.name, Some("pod-2".to_string()));
+    }
+
+    #[test]
+    fn test_field_selector_metadata_namespace() {
+        let client = FakeClient::new();
+
+        // Create pods in different namespaces
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("pod-1".to_string());
+        pod1.metadata.namespace = Some("default".to_string());
+        client
+            .create("default", &pod1, &PostParams::default())
+            .unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("pod-2".to_string());
+        pod2.metadata.namespace = Some("kube-system".to_string());
+        client
+            .create("kube-system", &pod2, &PostParams::default())
+            .unwrap();
+
+        // List all pods and filter by namespace using field selector
+        let params = ListParams::default().fields("metadata.namespace=default");
+        let pods: Vec<Pod> = client.list(None, &params).unwrap();
+
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0].metadata.namespace, Some("default".to_string()));
+    }
+
+    #[test]
+    fn test_field_selector_spec_nodename_for_pods() {
+        let client = FakeClient::new();
+
+        // Create pods with different node names
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("pod-1".to_string());
+        pod1.metadata.namespace = Some("default".to_string());
+        pod1.spec = Some(Default::default());
+        if let Some(ref mut spec) = pod1.spec {
+            spec.node_name = Some("node-1".to_string());
+        }
+        client
+            .create("default", &pod1, &PostParams::default())
+            .unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("pod-2".to_string());
+        pod2.metadata.namespace = Some("default".to_string());
+        pod2.spec = Some(Default::default());
+        if let Some(ref mut spec) = pod2.spec {
+            spec.node_name = Some("node-2".to_string());
+        }
+        client
+            .create("default", &pod2, &PostParams::default())
+            .unwrap();
+
+        // Filter by spec.nodeName - this is pre-registered for Pods
+        let params = ListParams::default().fields("spec.nodeName=node-1");
+        let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
+
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0].metadata.name, Some("pod-1".to_string()));
+        assert_eq!(
+            pods[0].spec.as_ref().unwrap().node_name,
+            Some("node-1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_field_selector_status_phase_for_pods() {
+        let client = FakeClient::new();
+
+        // Create pods with different phases
+        let mut pod1 = Pod::default();
+        pod1.metadata.name = Some("pod-1".to_string());
+        pod1.metadata.namespace = Some("default".to_string());
+        pod1.status = Some(Default::default());
+        if let Some(ref mut status) = pod1.status {
+            status.phase = Some("Running".to_string());
+        }
+        client
+            .create("default", &pod1, &PostParams::default())
+            .unwrap();
+
+        let mut pod2 = Pod::default();
+        pod2.metadata.name = Some("pod-2".to_string());
+        pod2.metadata.namespace = Some("default".to_string());
+        pod2.status = Some(Default::default());
+        if let Some(ref mut status) = pod2.status {
+            status.phase = Some("Pending".to_string());
+        }
+        client
+            .create("default", &pod2, &PostParams::default())
+            .unwrap();
+
+        // Filter by status.phase - this is pre-registered for Pods
+        let params = ListParams::default().fields("status.phase=Running");
+        let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
+
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0].metadata.name, Some("pod-1".to_string()));
+    }
+
+    #[test]
+    fn test_field_selector_multiple_common_fields() {
+        let client = FakeClient::new();
+
+        // Create multiple pods
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pod.metadata.namespace = Some("default".to_string());
+            client
+                .create("default", &pod, &PostParams::default())
+                .unwrap();
+        }
+
+        // Create a pod in a different namespace
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("pod-1".to_string());
+        pod.metadata.namespace = Some("kube-system".to_string());
+        client
+            .create("kube-system", &pod, &PostParams::default())
+            .unwrap();
+
+        // Filter by both metadata.name and metadata.namespace
+        let params = ListParams::default().fields("metadata.name=pod-1,metadata.namespace=default");
+        let pods: Vec<Pod> = client.list(None, &params).unwrap();
+
+        assert_eq!(pods.len(), 1);
+        assert_eq!(pods[0].metadata.name, Some("pod-1".to_string()));
+        assert_eq!(
+            pods[0].metadata.namespace,
+            Some("default".to_string())
+        );
+    }
+
+    #[test]
+    fn test_field_selector_no_match() {
+        let client = FakeClient::new();
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+        client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        // Filter by non-existent name
+        let params = ListParams::default().fields("metadata.name=nonexistent");
+        let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
+
+        assert_eq!(pods.len(), 0);
+    }
 }
