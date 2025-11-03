@@ -199,4 +199,85 @@ mod tests {
         );
         assert_eq!(result.unwrap().len(), 0, "List should return empty vector");
     }
+
+    #[test]
+    fn test_generation_initialized_on_create() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let obj = create_test_object("test-pod", "default");
+
+        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(created["metadata"]["generation"], 1);
+    }
+
+    #[test]
+    fn test_generation_increments_on_spec_update() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let obj = create_test_object("test-pod", "default");
+
+        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(created["metadata"]["generation"], 1);
+
+        let mut updated_obj = create_test_object("test-pod", "default");
+        updated_obj["metadata"]["resourceVersion"] = json!("1");
+        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:latest");
+
+        let updated = tracker
+            .update(&gvr, &gvk, updated_obj, "default", false)
+            .unwrap();
+        assert_eq!(updated["metadata"]["generation"], 2);
+    }
+
+    #[test]
+    fn test_generation_not_incremented_on_status_update() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        tracker.add_status_subresource(gvk.clone());
+
+        let obj = create_test_object("test-pod", "default");
+        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(created["metadata"]["generation"], 1);
+
+        let mut status_update = create_test_object("test-pod", "default");
+        status_update["metadata"]["resourceVersion"] = json!("1");
+        status_update["status"] = json!({"phase": "Running"});
+
+        let updated = tracker
+            .update(&gvr, &gvk, status_update, "default", true)
+            .unwrap();
+        assert_eq!(updated["metadata"]["generation"], 1);
+    }
+
+    #[test]
+    fn test_generation_multiple_increments() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let obj = create_test_object("test-pod", "default");
+
+        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(created["metadata"]["generation"], 1);
+
+        // First spec update
+        let mut updated_obj = create_test_object("test-pod", "default");
+        updated_obj["metadata"]["resourceVersion"] = json!("1");
+        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:1.19");
+        let updated = tracker
+            .update(&gvr, &gvk, updated_obj, "default", false)
+            .unwrap();
+        assert_eq!(updated["metadata"]["generation"], 2);
+
+        // Second spec update
+        let mut updated_obj = create_test_object("test-pod", "default");
+        updated_obj["metadata"]["resourceVersion"] = json!("2");
+        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:1.20");
+        let updated = tracker
+            .update(&gvr, &gvk, updated_obj, "default", false)
+            .unwrap();
+        assert_eq!(updated["metadata"]["generation"], 3);
+    }
 }

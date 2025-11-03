@@ -1,5 +1,6 @@
 use crate::utils::{
-    deletion_timestamp_equal, ensure_metadata, increment_resource_version, should_be_deleted,
+    deletion_timestamp_equal, ensure_metadata, increment_generation, increment_resource_version,
+    should_be_deleted,
 };
 use crate::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -266,6 +267,13 @@ impl ObjectTracker {
         new_meta.resource_version = Some(new_rv);
         new_meta.uid = existing_meta.uid;
         new_meta.creation_timestamp = existing_meta.creation_timestamp;
+
+        // Increment generation when spec changes, but not for status-only updates
+        if !is_status {
+            new_meta.generation = Some(increment_generation(existing_meta.generation));
+        } else {
+            new_meta.generation = existing_meta.generation;
+        }
 
         if !deletion_timestamp_equal(
             &new_meta.deletion_timestamp,
