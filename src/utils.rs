@@ -14,6 +14,10 @@ pub fn increment_resource_version(current: &str) -> Result<String> {
     }
 }
 
+pub fn increment_generation(current: Option<i64>) -> i64 {
+    current.unwrap_or(0) + 1
+}
+
 pub fn should_be_deleted(meta: &ObjectMeta) -> bool {
     meta.deletion_timestamp.is_some() && meta.finalizers.as_ref().is_none_or(Vec::is_empty)
 }
@@ -33,6 +37,9 @@ pub fn ensure_metadata(meta: &mut ObjectMeta, namespace: &str) {
     }
     if meta.uid.is_none() {
         meta.uid = Some(uuid::Uuid::new_v4().to_string());
+    }
+    if meta.generation.is_none() {
+        meta.generation = Some(1);
     }
 }
 
