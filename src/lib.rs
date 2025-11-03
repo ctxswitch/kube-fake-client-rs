@@ -50,6 +50,7 @@ mod client_utils;
 mod error;
 mod field_selectors;
 pub mod interceptor;
+pub mod label_selector;
 mod mock_service;
 mod tracker;
 mod utils;

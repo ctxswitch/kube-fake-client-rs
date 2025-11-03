@@ -5,6 +5,7 @@ use crate::client_utils::extract_gvk;
 use crate::error::Error;
 use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
+use crate::label_selector;
 use crate::tracker::GVR;
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt};
@@ -13,6 +14,7 @@ use http_body_util::Full;
 use kube::api::{ListParams, PatchParams, PostParams};
 use kube::client::Body as KubeBody;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::task::{Context, Poll};
 use tower::Service;
 
@@ -178,33 +180,22 @@ impl MockService {
         params
     }
 
-    /// Check if object matches label selector (simple equality-based matching)
     fn matches_label_selector(obj: &Value, selector: &str) -> bool {
-        let labels = obj
+        let labels_obj = obj
             .get("metadata")
             .and_then(|m| m.get("labels"))
             .and_then(|l| l.as_object());
 
-        if let Some(labels) = labels {
-            for requirement in selector.split(',') {
-                let requirement = requirement.trim();
-                if let Some((key, value)) = requirement.split_once('=') {
-                    let key = key.trim_end_matches('=');
-                    let value = value.trim();
-                    let label_value = labels.get(key).and_then(|v| v.as_str());
-                    if label_value != Some(value) {
-                        return false;
-                    }
-                } else {
-                    // For now, only support key=value format
-                    return false;
-                }
-            }
-            true
+        let labels: BTreeMap<String, String> = if let Some(labels_obj) = labels_obj {
+            labels_obj
+                .iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
         } else {
-            // No labels, doesn't match any selector
-            false
-        }
+            BTreeMap::new()
+        };
+
+        label_selector::matches_label_selector(&labels, selector).unwrap_or(false)
     }
 
     /// Check if object matches field selector (uses pre-registered fields)
