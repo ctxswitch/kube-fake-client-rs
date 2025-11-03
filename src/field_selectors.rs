@@ -7,7 +7,7 @@ use serde_json::Value;
 
 /// Extract value from pre-registered field paths that are supported by Kubernetes
 /// without requiring an index. Based on official Kubernetes documentation:
-/// https://kubernetes.io/docs/concepts/overview/working-with-objects/field-selectors/
+/// <https://kubernetes.io/docs/concepts/overview/working-with-objects/field-selectors/>
 ///
 /// Universal fields (all resources):
 /// - metadata.name
