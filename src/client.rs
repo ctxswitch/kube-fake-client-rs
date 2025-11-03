@@ -3,6 +3,7 @@
 use crate::client_utils::{extract_gvk, pluralize};
 use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
+use crate::label_selector;
 use crate::tracker::{ObjectTracker, GVK, GVR};
 use crate::{Error, Result};
 use kube::api::{ListParams, PatchParams, PostParams};
@@ -10,7 +11,7 @@ use kube::Resource;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Index function that extracts values from an object for indexing
@@ -169,11 +170,12 @@ impl FakeClient {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         // Apply label selector
-        if let Some(label_selector) = &params.label_selector {
+        if let Some(label_selector_str) = &params.label_selector {
             results.retain(|obj| {
                 let meta = obj.meta();
                 if let Some(labels) = &meta.labels {
-                    return self.match_label_selector(labels, label_selector);
+                    return label_selector::matches_label_selector(labels, label_selector_str)
+                        .unwrap_or(false);
                 }
                 false
             });
@@ -191,21 +193,6 @@ impl FakeClient {
         }
 
         Ok(results)
-    }
-
-    /// Match label selector (supports key=value format)
-    fn match_label_selector(&self, labels: &BTreeMap<String, String>, selector: &str) -> bool {
-        for requirement in selector.split(',') {
-            let requirement = requirement.trim();
-            if let Some((key, value)) = requirement.split_once('=') {
-                let key = key.trim_end_matches('=');
-                let value = value.trim();
-                if labels.get(key) != Some(&value.to_string()) {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     /// Filter objects by field selector
