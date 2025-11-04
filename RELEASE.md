@@ -58,24 +58,11 @@ The project uses GitHub Actions for automated releases. This is the **recommende
 
 ### Step 1: Update Version
 
-Use the Makefile to bump the version:
-
-```bash
-# For patch release (0.0.X)
-make version-patch
-
-# For minor release (0.X.0)
-make version-minor
-
-# For major release (X.0.0)
-make version-major
-```
-
-Or manually edit `Cargo.toml`:
+Edit `Cargo.toml` to bump the version:
 
 ```toml
 [package]
-version = "0.2.0"  # Update this
+version = "0.2.0"  # Update this to the new version
 ```
 
 ### Step 2: Update Documentation

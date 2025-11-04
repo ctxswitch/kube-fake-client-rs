@@ -81,33 +81,6 @@ publish: pre-publish ## Publish to crates.io (requires confirmation)
 		exit 1; \
 	fi
 
-version-patch: ## Bump patch version (0.0.X)
-	@echo "Current version: $$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2)"
-	@read -p "Bump patch version? [y/N] " -n 1 -r; \
-	echo; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		cargo set-version --bump patch; \
-		echo "New version: $$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2)"; \
-	fi
-
-version-minor: ## Bump minor version (0.X.0)
-	@echo "Current version: $$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2)"
-	@read -p "Bump minor version? [y/N] " -n 1 -r; \
-	echo; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		cargo set-version --bump minor; \
-		echo "New version: $$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2)"; \
-	fi
-
-version-major: ## Bump major version (X.0.0)
-	@echo "Current version: $$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2)"
-	@read -p "Bump major version? [y/N] " -n 1 -r; \
-	echo; \
-	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
-		cargo set-version --bump major; \
-		echo "New version: $$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2)"; \
-	fi
-
 tag: ## Create a git tag for the current version
 	@VERSION=$$(cargo pkgid | cut -d'#' -f2 | cut -d'@' -f2); \
 	echo "Creating tag v$$VERSION"; \
