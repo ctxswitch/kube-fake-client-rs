@@ -701,6 +701,51 @@ mod tests {
         assert_eq!(created.metadata.namespace, None);
     }
 
+    /// Test that single object delete only deletes the specified object, not a collection
+    #[tokio::test]
+    async fn test_single_delete_not_collection() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create multiple pods with the same labels
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pod.metadata.labels = Some(
+                [("app".to_string(), "nginx".to_string())]
+                    .iter()
+                    .cloned()
+                    .collect(),
+            );
+            pods.create(&PostParams::default(), &pod).await.unwrap();
+        }
+
+        // Verify all 3 pods exist
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 3);
+
+        // Delete only pod-2 by name (single delete, not collection delete)
+        pods.delete("pod-2", &kube::api::DeleteParams::default())
+            .await
+            .unwrap();
+
+        // Verify only pod-2 was deleted and the others remain
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 2);
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-1".to_string())));
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-3".to_string())));
+        assert!(!list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-2".to_string())));
+    }
+
     // ============================================================================
     // Field Selector Tests (through HTTP layer)
     // ============================================================================
