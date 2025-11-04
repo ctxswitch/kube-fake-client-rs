@@ -5,7 +5,6 @@ use kube::api::PostParams;
 use kube::Api;
 use kube_fake_client::{interceptor, ClientBuilder, Error};
 use serde_json::json;
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,9 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn create_client_with_error_injection() -> Result<kube::Client, Box<dyn std::error::Error>> {
     let client = ClientBuilder::new()
-        .with_interceptor_funcs(interceptor::Funcs {
+        .with_interceptor_funcs(
             // Return Err to simulate failures, Ok(None) to proceed with default behavior
-            create: Some(Arc::new(|ctx| {
+            interceptor::Funcs::new().create(|ctx| {
                 if ctx
                     .object
                     .get("metadata")
@@ -116,9 +115,8 @@ async fn create_client_with_error_injection() -> Result<kube::Client, Box<dyn st
                     ));
                 }
                 Ok(None)
-            })),
-            ..Default::default()
-        })
+            }),
+        )
         .build()
         .await?;
 
@@ -127,9 +125,9 @@ async fn create_client_with_error_injection() -> Result<kube::Client, Box<dyn st
 
 async fn create_client_with_custom_responses() -> Result<kube::Client, Box<dyn std::error::Error>> {
     let client = ClientBuilder::new()
-        .with_interceptor_funcs(interceptor::Funcs {
+        .with_interceptor_funcs(
             // Return Ok(Some(value)) to override default behavior with a custom response
-            patch: Some(Arc::new(|ctx| {
+            interceptor::Funcs::new().patch(|ctx| {
                 use k8s_openapi::api::core::v1::Pod;
 
                 match ctx.client.get::<Pod>(ctx.namespace, ctx.name) {
@@ -156,9 +154,8 @@ async fn create_client_with_custom_responses() -> Result<kube::Client, Box<dyn s
                     }
                     Err(e) => Err(e),
                 }
-            })),
-            ..Default::default()
-        })
+            }),
+        )
         .build()
         .await?;
 
@@ -167,9 +164,9 @@ async fn create_client_with_custom_responses() -> Result<kube::Client, Box<dyn s
 
 async fn create_client_with_validation() -> Result<kube::Client, Box<dyn std::error::Error>> {
     let client = ClientBuilder::new()
-        .with_interceptor_funcs(interceptor::Funcs {
+        .with_interceptor_funcs(
             // Interceptors can validate operations before they execute
-            delete: Some(Arc::new(|ctx| {
+            interceptor::Funcs::new().delete(|ctx| {
                 use k8s_openapi::api::core::v1::Pod;
 
                 match ctx.client.get::<Pod>(ctx.namespace, ctx.name) {
@@ -185,9 +182,8 @@ async fn create_client_with_validation() -> Result<kube::Client, Box<dyn std::er
                     }
                     Err(e) => Err(e),
                 }
-            })),
-            ..Default::default()
-        })
+            }),
+        )
         .build()
         .await?;
 
@@ -195,21 +191,20 @@ async fn create_client_with_validation() -> Result<kube::Client, Box<dyn std::er
 }
 
 async fn create_client_with_tracking(
-) -> Result<(kube::Client, Arc<std::sync::Mutex<u32>>), Box<dyn std::error::Error>> {
-    use std::sync::Mutex;
+) -> Result<(kube::Client, std::sync::Arc<std::sync::Mutex<u32>>), Box<dyn std::error::Error>> {
+    use std::sync::{Arc, Mutex};
 
     let create_count = Arc::new(Mutex::new(0));
     let create_count_clone = Arc::clone(&create_count);
 
     let client = ClientBuilder::new()
-        .with_interceptor_funcs(interceptor::Funcs {
+        .with_interceptor_funcs(
             // Interceptors can track API calls without modifying behavior
-            create: Some(Arc::new(move |_ctx| {
+            interceptor::Funcs::new().create(move |_ctx| {
                 *create_count_clone.lock().unwrap() += 1;
                 Ok(None)
-            })),
-            ..Default::default()
-        })
+            }),
+        )
         .build()
         .await?;
 

@@ -359,27 +359,23 @@ mod tests {
     #[tokio::test]
     async fn test_interceptor_error_injection() {
         use crate::interceptor;
-        use std::sync::Arc;
 
         // Create a client with an interceptor that injects errors for specific objects
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                create: Some(Arc::new(|ctx| {
-                    // Inject an error if the object name is "trigger-error"
-                    if ctx
-                        .object
-                        .get("metadata")
-                        .and_then(|m| m.get("name"))
-                        .and_then(|n| n.as_str())
-                        == Some("trigger-error")
-                    {
-                        return Err(crate::Error::Internal("injected error".into()));
-                    }
-                    // Continue with default behavior
-                    Ok(None)
-                })),
-                ..Default::default()
-            })
+            .with_interceptor_funcs(interceptor::Funcs::new().create(|ctx| {
+                // Inject an error if the object name is "trigger-error"
+                if ctx
+                    .object
+                    .get("metadata")
+                    .and_then(|m| m.get("name"))
+                    .and_then(|n| n.as_str())
+                    == Some("trigger-error")
+                {
+                    return Err(crate::Error::Internal("injected error".into()));
+                }
+                // Continue with default behavior
+                Ok(None)
+            }))
             .build()
             .await
             .unwrap();
@@ -405,29 +401,25 @@ mod tests {
     async fn test_interceptor_custom_logic() {
         use crate::interceptor;
         use serde_json::json;
-        use std::sync::Arc;
 
         // Create a client with an interceptor that modifies created objects
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                create: Some(Arc::new(|ctx| {
-                    // Return a modified version of the object with an added label
-                    let mut modified = ctx.object.clone();
-                    if let Some(metadata) = modified.get_mut("metadata") {
-                        if let Some(metadata_obj) = metadata.as_object_mut() {
-                            let labels = metadata_obj.entry("labels").or_insert(json!({}));
-                            if let Some(labels_obj) = labels.as_object_mut() {
-                                labels_obj.insert("interceptor".to_string(), json!("added"));
-                            }
+            .with_interceptor_funcs(interceptor::Funcs::new().create(|ctx| {
+                // Return a modified version of the object with an added label
+                let mut modified = ctx.object.clone();
+                if let Some(metadata) = modified.get_mut("metadata") {
+                    if let Some(metadata_obj) = metadata.as_object_mut() {
+                        let labels = metadata_obj.entry("labels").or_insert(json!({}));
+                        if let Some(labels_obj) = labels.as_object_mut() {
+                            labels_obj.insert("interceptor".to_string(), json!("added"));
                         }
                     }
-                    // Return the modified object - this overrides the default behavior
-                    // We can use the kube client to create it
-                    Ok(None) // Let default behavior handle it, but with modified data
-                             // Note: In a real scenario, you could use ctx.client to make additional API calls
-                })),
-                ..Default::default()
-            })
+                }
+                // Return the modified object - this overrides the default behavior
+                // We can use the kube client to create it
+                Ok(None) // Let default behavior handle it, but with modified data
+                         // Note: In a real scenario, you could use ctx.client to make additional API calls
+            }))
             .build()
             .await
             .unwrap();
@@ -472,15 +464,12 @@ mod tests {
         let create_count_clone = Arc::clone(&create_count);
 
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                create: Some(Arc::new(move |_ctx| {
-                    // Increment counter
-                    *create_count_clone.lock().unwrap() += 1;
-                    // Continue with default behavior
-                    Ok(None)
-                })),
-                ..Default::default()
-            })
+            .with_interceptor_funcs(interceptor::Funcs::new().create(move |_ctx| {
+                // Increment counter
+                *create_count_clone.lock().unwrap() += 1;
+                // Continue with default behavior
+                Ok(None)
+            }))
             .build()
             .await
             .unwrap();
@@ -504,31 +493,27 @@ mod tests {
     async fn test_interceptor_get_override() {
         use crate::interceptor;
         use serde_json::json;
-        use std::sync::Arc;
 
         // Create an interceptor that returns a fake pod for a specific name
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                get: Some(Arc::new(|ctx| {
-                    if ctx.name == "fake-pod" {
-                        // Return a fake pod
-                        return Ok(Some(json!({
-                            "apiVersion": "v1",
-                            "kind": "Pod",
-                            "metadata": {
-                                "name": "fake-pod",
-                                "namespace": "default",
-                                "labels": {
-                                    "source": "interceptor"
-                                }
+            .with_interceptor_funcs(interceptor::Funcs::new().get(|ctx| {
+                if ctx.name == "fake-pod" {
+                    // Return a fake pod
+                    return Ok(Some(json!({
+                        "apiVersion": "v1",
+                        "kind": "Pod",
+                        "metadata": {
+                            "name": "fake-pod",
+                            "namespace": "default",
+                            "labels": {
+                                "source": "interceptor"
                             }
-                        })));
-                    }
-                    // Continue with default behavior for other pods
-                    Ok(None)
-                })),
-                ..Default::default()
-            })
+                        }
+                    })));
+                }
+                // Continue with default behavior for other pods
+                Ok(None)
+            }))
             .build()
             .await
             .unwrap();
@@ -546,24 +531,20 @@ mod tests {
     #[tokio::test]
     async fn test_interceptor_delete_prevention() {
         use crate::interceptor;
-        use std::sync::Arc;
 
         // Create a client that prevents deleting pods with a specific name
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                delete: Some(Arc::new(|ctx| {
-                    // Prevent deleting pods with "protected" in the name
-                    // Note: In a real scenario, you could inspect ctx.namespace and ctx.name
-                    // to make decisions, or return custom error responses
-                    if ctx.name.contains("protected") {
-                        return Err(crate::Error::Internal("Cannot delete protected pod".into()));
-                    }
+            .with_interceptor_funcs(interceptor::Funcs::new().delete(|ctx| {
+                // Prevent deleting pods with "protected" in the name
+                // Note: In a real scenario, you could inspect ctx.namespace and ctx.name
+                // to make decisions, or return custom error responses
+                if ctx.name.contains("protected") {
+                    return Err(crate::Error::Internal("Cannot delete protected pod".into()));
+                }
 
-                    // Continue with default behavior
-                    Ok(None)
-                })),
-                ..Default::default()
-            })
+                // Continue with default behavior
+                Ok(None)
+            }))
             .build()
             .await
             .unwrap();
@@ -601,27 +582,23 @@ mod tests {
     async fn test_interceptor_replace() {
         use crate::interceptor;
         use serde_json::json;
-        use std::sync::Arc;
 
         // Create a client with an interceptor that tracks replace operations
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                replace: Some(Arc::new(|ctx| {
-                    // Add a label to indicate this was replaced
-                    let mut modified = ctx.object.clone();
-                    if let Some(metadata) = modified.get_mut("metadata") {
-                        if let Some(metadata_obj) = metadata.as_object_mut() {
-                            let labels = metadata_obj.entry("labels").or_insert(json!({}));
-                            if let Some(labels_obj) = labels.as_object_mut() {
-                                labels_obj.insert("replaced".to_string(), json!("true"));
-                            }
+            .with_interceptor_funcs(interceptor::Funcs::new().replace(|ctx| {
+                // Add a label to indicate this was replaced
+                let mut modified = ctx.object.clone();
+                if let Some(metadata) = modified.get_mut("metadata") {
+                    if let Some(metadata_obj) = metadata.as_object_mut() {
+                        let labels = metadata_obj.entry("labels").or_insert(json!({}));
+                        if let Some(labels_obj) = labels.as_object_mut() {
+                            labels_obj.insert("replaced".to_string(), json!("true"));
                         }
                     }
-                    // Return the modified object to override default behavior
-                    Ok(Some(modified))
-                })),
-                ..Default::default()
-            })
+                }
+                // Return the modified object to override default behavior
+                Ok(Some(modified))
+            }))
             .build()
             .await
             .unwrap();
@@ -669,47 +646,46 @@ mod tests {
     async fn test_interceptor_status_subresources() {
         use crate::interceptor;
         use serde_json::json;
-        use std::sync::Arc;
 
         // Create a client with status subresource interceptors
         let client = ClientBuilder::new()
             .with_status_subresource::<Pod>()
-            .with_interceptor_funcs(interceptor::Funcs {
-                get_status: Some(Arc::new(|ctx| {
-                    // Return a fake status
-                    Ok(Some(json!({
-                        "apiVersion": "v1",
-                        "kind": "Pod",
-                        "metadata": {
-                            "name": ctx.name,
-                            "namespace": ctx.namespace,
-                        },
-                        "status": {
-                            "phase": "Running",
-                            "message": "Intercepted status"
-                        }
-                    })))
-                })),
-                patch_status: Some(Arc::new(|ctx| {
-                    // Create a custom response with a label indicating the status was patched
-                    // Note: ctx.namespace, ctx.name, and ctx.patch are all available for inspection
-                    let response = json!({
-                        "apiVersion": "v1",
-                        "kind": "Pod",
-                        "metadata": {
-                            "name": ctx.name,
-                            "namespace": ctx.namespace,
-                            "labels": {
-                                "status-patched": "true"
+            .with_interceptor_funcs(
+                interceptor::Funcs::new()
+                    .get_status(|ctx| {
+                        // Return a fake status
+                        Ok(Some(json!({
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "metadata": {
+                                "name": ctx.name,
+                                "namespace": ctx.namespace,
+                            },
+                            "status": {
+                                "phase": "Running",
+                                "message": "Intercepted status"
                             }
-                        },
-                        "status": ctx.patch.get("status").cloned().unwrap_or(json!({}))
-                    });
+                        })))
+                    })
+                    .patch_status(|ctx| {
+                        // Create a custom response with a label indicating the status was patched
+                        // Note: ctx.namespace, ctx.name, and ctx.patch are all available for inspection
+                        let response = json!({
+                            "apiVersion": "v1",
+                            "kind": "Pod",
+                            "metadata": {
+                                "name": ctx.name,
+                                "namespace": ctx.namespace,
+                                "labels": {
+                                    "status-patched": "true"
+                                }
+                            },
+                            "status": ctx.patch.get("status").cloned().unwrap_or(json!({}))
+                        });
 
-                    Ok(Some(response))
-                })),
-                ..Default::default()
-            })
+                        Ok(Some(response))
+                    }),
+            )
             .build()
             .await
             .unwrap();
@@ -776,17 +752,17 @@ mod tests {
         let ops_clone2 = Arc::clone(&operations);
 
         let client = ClientBuilder::new()
-            .with_interceptor_funcs(interceptor::Funcs {
-                replace: Some(Arc::new(move |_ctx| {
-                    ops_clone1.lock().unwrap().push("replace");
-                    Ok(None)
-                })),
-                patch: Some(Arc::new(move |_ctx| {
-                    ops_clone2.lock().unwrap().push("patch");
-                    Ok(None)
-                })),
-                ..Default::default()
-            })
+            .with_interceptor_funcs(
+                interceptor::Funcs::new()
+                    .replace(move |_ctx| {
+                        ops_clone1.lock().unwrap().push("replace");
+                        Ok(None)
+                    })
+                    .patch(move |_ctx| {
+                        ops_clone2.lock().unwrap().push("patch");
+                        Ok(None)
+                    }),
+            )
             .build()
             .await
             .unwrap();

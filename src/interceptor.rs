@@ -9,32 +9,47 @@ use std::sync::Arc;
 /// Interceptor functions for client operations
 ///
 /// Return `Ok(Some(value))` to override, `Ok(None)` to continue, or `Err(e)` to inject an error.
+///
+/// # Example
+/// ```
+/// use kube_fake_client::interceptor;
+///
+/// let funcs = interceptor::Funcs::new()
+///     .create(|ctx| {
+///         // Custom create logic
+///         Ok(None)
+///     })
+///     .get(|ctx| {
+///         // Custom get logic
+///         Ok(None)
+///     });
+/// ```
 #[derive(Default)]
 pub struct Funcs {
     /// Intercept Create operations
-    pub create: Option<CreateInterceptor>,
+    pub(crate) create: Option<CreateInterceptor>,
     /// Intercept Get operations
-    pub get: Option<GetInterceptor>,
+    pub(crate) get: Option<GetInterceptor>,
     /// Intercept Update operations (PATCH-based updates)
-    pub update: Option<UpdateInterceptor>,
+    pub(crate) update: Option<UpdateInterceptor>,
     /// Intercept Replace operations (PUT - full replacement)
-    pub replace: Option<ReplaceInterceptor>,
+    pub(crate) replace: Option<ReplaceInterceptor>,
     /// Intercept Delete operations
-    pub delete: Option<DeleteInterceptor>,
+    pub(crate) delete: Option<DeleteInterceptor>,
     /// Intercept Delete Collection operations
-    pub delete_collection: Option<DeleteCollectionInterceptor>,
+    pub(crate) delete_collection: Option<DeleteCollectionInterceptor>,
     /// Intercept List operations
-    pub list: Option<ListInterceptor>,
+    pub(crate) list: Option<ListInterceptor>,
     /// Intercept Patch operations
-    pub patch: Option<PatchInterceptor>,
+    pub(crate) patch: Option<PatchInterceptor>,
     /// Intercept Watch operations
-    pub watch: Option<WatchInterceptor>,
+    pub(crate) watch: Option<WatchInterceptor>,
     /// Intercept Get Status subresource operations
-    pub get_status: Option<GetStatusInterceptor>,
+    pub(crate) get_status: Option<GetStatusInterceptor>,
     /// Intercept Patch Status subresource operations
-    pub patch_status: Option<PatchStatusInterceptor>,
+    pub(crate) patch_status: Option<PatchStatusInterceptor>,
     /// Intercept Replace Status subresource operations
-    pub replace_status: Option<ReplaceStatusInterceptor>,
+    pub(crate) replace_status: Option<ReplaceStatusInterceptor>,
 }
 
 /// Context passed to Create interceptors
@@ -179,3 +194,118 @@ pub struct ReplaceStatusContext<'a> {
 
 pub type ReplaceStatusInterceptor =
     Arc<dyn Fn(ReplaceStatusContext) -> Result<Option<Value>> + Send + Sync>;
+
+impl Funcs {
+    /// Create a new empty set of interceptors
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a Create interceptor
+    pub fn create<F>(mut self, f: F) -> Self
+    where
+        F: Fn(CreateContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.create = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Get interceptor
+    pub fn get<F>(mut self, f: F) -> Self
+    where
+        F: Fn(GetContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.get = Some(Arc::new(f));
+        self
+    }
+
+    /// Add an Update interceptor
+    pub fn update<F>(mut self, f: F) -> Self
+    where
+        F: Fn(UpdateContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.update = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Replace interceptor
+    pub fn replace<F>(mut self, f: F) -> Self
+    where
+        F: Fn(ReplaceContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.replace = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Delete interceptor
+    pub fn delete<F>(mut self, f: F) -> Self
+    where
+        F: Fn(DeleteContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.delete = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Delete Collection interceptor
+    pub fn delete_collection<F>(mut self, f: F) -> Self
+    where
+        F: Fn(DeleteCollectionContext) -> Result<Option<Vec<Value>>> + Send + Sync + 'static,
+    {
+        self.delete_collection = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a List interceptor
+    pub fn list<F>(mut self, f: F) -> Self
+    where
+        F: Fn(ListContext) -> Result<Option<Vec<Value>>> + Send + Sync + 'static,
+    {
+        self.list = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Patch interceptor
+    pub fn patch<F>(mut self, f: F) -> Self
+    where
+        F: Fn(PatchContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.patch = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Watch interceptor
+    pub fn watch<F>(mut self, f: F) -> Self
+    where
+        F: Fn(WatchContext) -> Result<Option<Vec<Value>>> + Send + Sync + 'static,
+    {
+        self.watch = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Get Status interceptor
+    pub fn get_status<F>(mut self, f: F) -> Self
+    where
+        F: Fn(GetStatusContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.get_status = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Patch Status interceptor
+    pub fn patch_status<F>(mut self, f: F) -> Self
+    where
+        F: Fn(PatchStatusContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.patch_status = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Replace Status interceptor
+    pub fn replace_status<F>(mut self, f: F) -> Self
+    where
+        F: Fn(ReplaceStatusContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.replace_status = Some(Arc::new(f));
+        self
+    }
+}
