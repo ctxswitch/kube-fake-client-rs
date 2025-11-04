@@ -207,24 +207,20 @@ impl ClientBuilder {
     ///
     /// ```rust,no_run
     /// use kube_fake_client::{ClientBuilder, interceptor};
-    /// use std::sync::Arc;
     ///
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = ClientBuilder::new()
-    ///     .with_interceptor_funcs(interceptor::Funcs {
-    ///         create: Some(Arc::new(|ctx| {
-    ///             // Inject an error for specific objects
+    ///     .with_interceptor_funcs(
+    ///         interceptor::Funcs::new().create(|ctx| {
     ///             if ctx.object.get("metadata")
     ///                 .and_then(|m| m.get("name"))
     ///                 .and_then(|n| n.as_str()) == Some("trigger-error") {
     ///                 return Err(kube_fake_client::Error::Internal("injected error".into()));
     ///             }
-    ///             // Continue with default behavior
     ///             Ok(None)
-    ///         })),
-    ///         ..Default::default()
-    ///     })
+    ///         })
+    ///     )
     ///     .build()
     ///     .await?;
     /// # Ok(())
