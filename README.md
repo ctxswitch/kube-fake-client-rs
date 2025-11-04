@@ -90,36 +90,6 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 }
 ```
 
-### Cluster-Scoped Resources
-
-```rust
-use kube_fake_client::ClientBuilder;
-use k8s_openapi::api::core::v1::Node;
-use kube::api::{Api, PostParams, ListParams};
-
-#[tokio::test]
-async fn test_node_management() -> Result<(), Box<dyn std::error::Error>> {
-    let client = ClientBuilder::new().build().await?;
-    let nodes: Api<Node> = Api::all(client);
-
-    // Create nodes
-    for i in 1..=3 {
-        let mut node = Node::default();
-        node.metadata.name = Some(format!("worker-{}", i));
-        nodes.create(&PostParams::default(), &node).await?;
-    }
-
-    // List all nodes
-    let node_list = nodes.list(&ListParams::default()).await?;
-    assert_eq!(node_list.items.len(), 3);
-
-    // Cluster-scoped resources have no namespace
-    assert!(node_list.items[0].metadata.namespace.is_none());
-
-    Ok(())
-}
-```
-
 ## Examples
 
 See [examples/](examples/) for more detailed examples including:
