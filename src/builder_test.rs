@@ -828,4 +828,84 @@ mod tests {
         assert!(ops.contains(&"patch"));
         assert!(ops.contains(&"replace"));
     }
+
+    /// Test that AlreadyExists returns 409 (matches kube-rs expectation)
+    #[tokio::test]
+    async fn test_error_code_409_already_exists() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pods.create(&kube::api::PostParams::default(), &pod)
+            .await
+            .unwrap();
+
+        // Try to create the same pod again - should get 409
+        match pods.create(&kube::api::PostParams::default(), &pod).await {
+            Ok(_) => panic!("Expected AlreadyExists error"),
+            Err(kube::Error::Api(ae)) => {
+                assert_eq!(ae.code, 409, "AlreadyExists should return 409");
+                assert_eq!(ae.reason, "AlreadyExists");
+                assert!(ae.message.contains("already exists"));
+            }
+            Err(e) => panic!("Expected Api error, got: {:?}", e),
+        }
+    }
+
+    /// Test that NotFound returns 404
+    #[tokio::test]
+    async fn test_error_code_404_not_found() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Try to get non-existent pod - should get 404
+        match pods.get("nonexistent-pod").await {
+            Ok(_) => panic!("Expected NotFound error"),
+            Err(kube::Error::Api(ae)) => {
+                assert_eq!(ae.code, 404, "NotFound should return 404");
+                assert_eq!(ae.reason, "NotFound");
+                assert!(ae.message.contains("not found"));
+            }
+            Err(e) => panic!("Expected Api error, got: {:?}", e),
+        }
+    }
+
+    /// Test that resource version conflict returns 409
+    #[tokio::test]
+    async fn test_error_code_409_conflict() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        let created = pods
+            .create(&kube::api::PostParams::default(), &pod)
+            .await
+            .unwrap();
+
+        // Try to update with wrong resource version
+        let mut update = created.clone();
+        update.metadata.resource_version = Some("999999".to_string());
+        update.metadata.labels = Some(
+            [("test".to_string(), "value".to_string())]
+                .iter()
+                .cloned()
+                .collect(),
+        );
+
+        match pods
+            .replace("test-pod", &kube::api::PostParams::default(), &update)
+            .await
+        {
+            Ok(_) => panic!("Expected Conflict error"),
+            Err(kube::Error::Api(ae)) => {
+                assert_eq!(ae.code, 409, "Conflict should return 409");
+                assert_eq!(ae.reason, "Conflict");
+            }
+            Err(e) => panic!("Expected Api error, got: {:?}", e),
+        }
+    }
 }

@@ -485,22 +485,21 @@ impl MockService {
 
                 match create_interceptor(ctx) {
                     Ok(Some(result)) => result,
-                    Ok(None) => self.client.tracker().create(&gvr, &gvk, obj, namespace)?,
+                    Ok(None) => {
+                        handle_error!(self.client.tracker().create(&gvr, &gvk, obj, namespace))
+                    }
                     Err(e) => {
-                        return Self::error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Interceptor error: {}", e),
-                        );
+                        return Self::error_to_response(e);
                     }
                 }
             } else {
-                self.client.tracker().create(&gvr, &gvk, obj, namespace)?
+                handle_error!(self.client.tracker().create(&gvr, &gvk, obj, namespace))
             }
         } else {
-            self.client.tracker().create(&gvr, &gvk, obj, namespace)?
+            handle_error!(self.client.tracker().create(&gvr, &gvk, obj, namespace))
         };
 
-        Self::success_response(created)
+        Self::success_response_with_status(created, StatusCode::CREATED)
     }
 
     async fn handle_put(
@@ -552,21 +551,19 @@ impl MockService {
 
                     match replace_status_interceptor(ctx) {
                         Ok(Some(result)) => result,
-                        Ok(None) => self
+                        Ok(None) => handle_error!(self
                             .client
                             .tracker()
-                            .update(&gvr, &gvk, obj, namespace, true)?,
+                            .update(&gvr, &gvk, obj, namespace, true)),
                         Err(e) => {
-                            return Self::error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                &format!("Interceptor error: {}", e),
-                            );
+                            return Self::error_to_response(e);
                         }
                     }
                 } else {
-                    self.client
+                    handle_error!(self
+                        .client
                         .tracker()
-                        .update(&gvr, &gvk, obj, namespace, true)?
+                        .update(&gvr, &gvk, obj, namespace, true))
                 }
             } else if let Some(ref replace_interceptor) = interceptors.replace {
                 let ctx = interceptor::ReplaceContext {
@@ -579,26 +576,25 @@ impl MockService {
 
                 match replace_interceptor(ctx) {
                     Ok(Some(result)) => result,
-                    Ok(None) => self
+                    Ok(None) => handle_error!(self
                         .client
                         .tracker()
-                        .update(&gvr, &gvk, obj, namespace, false)?,
+                        .update(&gvr, &gvk, obj, namespace, false)),
                     Err(e) => {
-                        return Self::error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Interceptor error: {}", e),
-                        );
+                        return Self::error_to_response(e);
                     }
                 }
             } else {
-                self.client
+                handle_error!(self
+                    .client
                     .tracker()
-                    .update(&gvr, &gvk, obj, namespace, false)?
+                    .update(&gvr, &gvk, obj, namespace, false))
             }
         } else {
-            self.client
+            handle_error!(self
+                .client
                 .tracker()
-                .update(&gvr, &gvk, obj, namespace, is_status)?
+                .update(&gvr, &gvk, obj, namespace, is_status))
         };
 
         Self::success_response(updated)
@@ -643,28 +639,29 @@ impl MockService {
                     match patch_status_interceptor(ctx) {
                         Ok(Some(result)) => result,
                         Ok(None) => {
-                            let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
+                            let mut existing =
+                                handle_error!(self.client.tracker().get(&gvr, namespace, &name));
                             Self::apply_patch(&mut existing, &patch, patch_type)?;
                             let gvk = extract_gvk(&existing)?;
-                            self.client
+                            handle_error!(self
+                                .client
                                 .tracker()
-                                .update(&gvr, &gvk, existing, namespace, true)?
+                                .update(&gvr, &gvk, existing, namespace, true))
                         }
                         Err(e) => {
-                            return Self::error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                &format!("Interceptor error: {}", e),
-                            );
+                            return Self::error_to_response(e);
                         }
                     }
                 } else {
                     // No interceptor - do default patch behavior
-                    let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
+                    let mut existing =
+                        handle_error!(self.client.tracker().get(&gvr, namespace, &name));
                     Self::apply_patch(&mut existing, &patch, patch_type)?;
                     let gvk = extract_gvk(&existing)?;
-                    self.client
+                    handle_error!(self
+                        .client
                         .tracker()
-                        .update(&gvr, &gvk, existing, namespace, true)?
+                        .update(&gvr, &gvk, existing, namespace, true))
                 }
             } else if let Some(ref patch_interceptor) = interceptors.patch {
                 let ctx = interceptor::PatchContext {
@@ -678,36 +675,37 @@ impl MockService {
                 match patch_interceptor(ctx) {
                     Ok(Some(result)) => result,
                     Ok(None) => {
-                        let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
+                        let mut existing =
+                            handle_error!(self.client.tracker().get(&gvr, namespace, &name));
                         Self::apply_patch(&mut existing, &patch, patch_type)?;
                         let gvk = extract_gvk(&existing)?;
-                        self.client
+                        handle_error!(self
+                            .client
                             .tracker()
-                            .update(&gvr, &gvk, existing, namespace, false)?
+                            .update(&gvr, &gvk, existing, namespace, false))
                     }
                     Err(e) => {
-                        return Self::error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Interceptor error: {}", e),
-                        );
+                        return Self::error_to_response(e);
                     }
                 }
             } else {
                 // No interceptor - do default patch behavior
-                let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
+                let mut existing = handle_error!(self.client.tracker().get(&gvr, namespace, &name));
                 Self::apply_patch(&mut existing, &patch, patch_type)?;
                 let gvk = extract_gvk(&existing)?;
-                self.client
+                handle_error!(self
+                    .client
                     .tracker()
-                    .update(&gvr, &gvk, existing, namespace, false)?
+                    .update(&gvr, &gvk, existing, namespace, false))
             }
         } else {
-            let mut existing = self.client.tracker().get(&gvr, namespace, &name)?;
+            let mut existing = handle_error!(self.client.tracker().get(&gvr, namespace, &name));
             Self::apply_patch(&mut existing, &patch, patch_type)?;
             let gvk = extract_gvk(&existing)?;
-            self.client
+            handle_error!(self
+                .client
                 .tracker()
-                .update(&gvr, &gvk, existing, namespace, is_status)?
+                .update(&gvr, &gvk, existing, namespace, is_status))
         };
 
         Self::success_response(updated)
@@ -742,19 +740,18 @@ impl MockService {
 
                     match delete_interceptor(ctx) {
                         Ok(Some(result)) => result,
-                        Ok(None) => self.client.tracker().delete(&gvr, namespace, &name)?,
+                        Ok(None) => {
+                            handle_error!(self.client.tracker().delete(&gvr, namespace, &name))
+                        }
                         Err(e) => {
-                            return Self::error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                &format!("Interceptor error: {}", e),
-                            );
+                            return Self::error_to_response(e);
                         }
                     }
                 } else {
-                    self.client.tracker().delete(&gvr, namespace, &name)?
+                    handle_error!(self.client.tracker().delete(&gvr, namespace, &name))
                 }
             } else {
-                self.client.tracker().delete(&gvr, namespace, &name)?
+                handle_error!(self.client.tracker().delete(&gvr, namespace, &name))
             };
 
             Self::success_response(deleted)
@@ -869,8 +866,15 @@ impl MockService {
     fn success_response(
         data: Value,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+        Self::success_response_with_status(data, StatusCode::OK)
+    }
+
+    fn success_response_with_status(
+        data: Value,
+        status: StatusCode,
+    ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Response::builder()
-            .status(StatusCode::OK)
+            .status(status)
             .header("Content-Type", "application/json")
             .body(Full::new(Bytes::from(data.to_string())))
             .unwrap())
