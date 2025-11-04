@@ -969,4 +969,242 @@ mod tests {
         assert_eq!(filtered.items[0].metadata.name, Some("node-2".to_string()));
         assert_eq!(filtered.items[0].metadata.namespace, None);
     }
+
+    // ============================================================================
+    // DeleteCollection Tests
+    // ============================================================================
+
+    /// Test delete collection without selectors (deletes all)
+    #[tokio::test]
+    async fn test_delete_collection_all() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create multiple pods
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pods.create(&PostParams::default(), &pod).await.unwrap();
+        }
+
+        // Verify they exist
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 3);
+
+        // Delete all pods
+        pods.delete_collection(
+            &kube::api::DeleteParams::default(),
+            &kube::api::ListParams::default(),
+        )
+        .await
+        .unwrap();
+
+        // Verify they're all gone
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 0);
+    }
+
+    /// Test delete collection with label selector
+    #[tokio::test]
+    async fn test_delete_collection_with_label_selector() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create pods with different labels
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pod.metadata.labels = Some(
+                [(
+                    "app".to_string(),
+                    if i <= 2 {
+                        "nginx".to_string()
+                    } else {
+                        "redis".to_string()
+                    },
+                )]
+                .iter()
+                .cloned()
+                .collect(),
+            );
+            pods.create(&PostParams::default(), &pod).await.unwrap();
+        }
+
+        // Delete only nginx pods
+        let params = kube::api::ListParams::default().labels("app=nginx");
+        pods.delete_collection(&kube::api::DeleteParams::default(), &params)
+            .await
+            .unwrap();
+
+        // Verify only redis pod remains
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].metadata.name, Some("pod-3".to_string()));
+    }
+
+    /// Test delete collection with field selector
+    #[tokio::test]
+    async fn test_delete_collection_with_field_selector() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create multiple pods
+        for i in 1..=3 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pods.create(&PostParams::default(), &pod).await.unwrap();
+        }
+
+        // Delete specific pod by name using field selector
+        let params = kube::api::ListParams::default().fields("metadata.name=pod-2");
+        pods.delete_collection(&kube::api::DeleteParams::default(), &params)
+            .await
+            .unwrap();
+
+        // Verify only pod-2 was deleted
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 2);
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-1".to_string())));
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-3".to_string())));
+    }
+
+    /// Test delete collection with both label and field selectors
+    #[tokio::test]
+    async fn test_delete_collection_with_combined_selectors() {
+        use k8s_openapi::api::core::v1::{Container, PodSpec};
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create pods with labels and node assignments
+        for i in 1..=4 {
+            let mut pod = Pod::default();
+            pod.metadata.name = Some(format!("pod-{}", i));
+            pod.metadata.labels = Some(
+                [(
+                    "app".to_string(),
+                    if i <= 2 {
+                        "nginx".to_string()
+                    } else {
+                        "redis".to_string()
+                    },
+                )]
+                .iter()
+                .cloned()
+                .collect(),
+            );
+            pod.spec = Some(PodSpec {
+                node_name: Some(if i % 2 == 0 {
+                    "node-1".to_string()
+                } else {
+                    "node-2".to_string()
+                }),
+                containers: vec![Container {
+                    name: "app".to_string(),
+                    image: Some("app:latest".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            pods.create(&PostParams::default(), &pod).await.unwrap();
+        }
+
+        // Delete nginx pods on node-1 (should match only pod-2)
+        let params = kube::api::ListParams::default()
+            .labels("app=nginx")
+            .fields("spec.nodeName=node-1");
+        pods.delete_collection(&kube::api::DeleteParams::default(), &params)
+            .await
+            .unwrap();
+
+        // Verify only pod-2 was deleted
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 3);
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-1".to_string())));
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-3".to_string())));
+        assert!(list
+            .items
+            .iter()
+            .any(|p| p.metadata.name == Some("pod-4".to_string())));
+    }
+
+    /// Test delete collection on cluster-scoped resources
+    #[tokio::test]
+    async fn test_delete_collection_cluster_scoped() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let nodes: kube::Api<Node> = kube::Api::all(client);
+
+        // Create nodes with labels
+        for i in 1..=3 {
+            let mut node = Node::default();
+            node.metadata.name = Some(format!("node-{}", i));
+            node.metadata.labels = Some(
+                [(
+                    "role".to_string(),
+                    if i <= 2 {
+                        "worker".to_string()
+                    } else {
+                        "master".to_string()
+                    },
+                )]
+                .iter()
+                .cloned()
+                .collect(),
+            );
+            nodes.create(&PostParams::default(), &node).await.unwrap();
+        }
+
+        // Delete worker nodes
+        let params = kube::api::ListParams::default().labels("role=worker");
+        nodes
+            .delete_collection(&kube::api::DeleteParams::default(), &params)
+            .await
+            .unwrap();
+
+        // Verify only master node remains
+        let list = nodes.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].metadata.name, Some("node-3".to_string()));
+    }
+
+    /// Test delete collection with no matches
+    #[tokio::test]
+    async fn test_delete_collection_no_matches() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.labels = Some(
+            [("app".to_string(), "nginx".to_string())]
+                .iter()
+                .cloned()
+                .collect(),
+        );
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        // Try to delete with non-matching selector
+        let params = kube::api::ListParams::default().labels("app=redis");
+        pods.delete_collection(&kube::api::DeleteParams::default(), &params)
+            .await
+            .unwrap();
+
+        // Verify pod still exists
+        let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].metadata.name, Some("test-pod".to_string()));
+    }
 }

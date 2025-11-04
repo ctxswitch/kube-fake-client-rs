@@ -295,7 +295,7 @@ impl MockService {
                 self.handle_patch(&path, body_bytes, content_type.as_deref())
                     .await
             }
-            "DELETE" => self.handle_delete(&path).await,
+            "DELETE" => self.handle_delete(&path, query.as_deref()).await,
             _ => Self::error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
         }
     }
@@ -716,45 +716,102 @@ impl MockService {
     async fn handle_delete(
         &self,
         path: &str,
+        query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
 
         // Convert Option<String> to &str, using empty string for cluster-scoped resources
         let namespace = parsed.namespace.as_deref().unwrap_or("");
 
-        let name = parsed.name.ok_or("Name required for DELETE")?;
         let gvr = GVR::new(
-            parsed.group.unwrap_or_default(),
-            parsed.version,
-            parsed.resource,
+            parsed.group.clone().unwrap_or_default(),
+            parsed.version.clone(),
+            parsed.resource.clone(),
         );
 
-        let deleted = if let Some(ref interceptors) = self.client.interceptors {
-            if let Some(ref delete_interceptor) = interceptors.delete {
-                let ctx = interceptor::DeleteContext {
-                    client: &self.client,
-                    namespace,
-                    name: &name,
-                };
+        // Check if this is a collection delete (no name) or single object delete
+        if let Some(name) = parsed.name {
+            // Single object deletion
+            let deleted = if let Some(ref interceptors) = self.client.interceptors {
+                if let Some(ref delete_interceptor) = interceptors.delete {
+                    let ctx = interceptor::DeleteContext {
+                        client: &self.client,
+                        namespace,
+                        name: &name,
+                    };
 
-                match delete_interceptor(ctx) {
-                    Ok(Some(result)) => result,
-                    Ok(None) => self.client.tracker().delete(&gvr, namespace, &name)?,
-                    Err(e) => {
-                        return Self::error_response(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            &format!("Interceptor error: {}", e),
-                        );
+                    match delete_interceptor(ctx) {
+                        Ok(Some(result)) => result,
+                        Ok(None) => self.client.tracker().delete(&gvr, namespace, &name)?,
+                        Err(e) => {
+                            return Self::error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &format!("Interceptor error: {}", e),
+                            );
+                        }
                     }
+                } else {
+                    self.client.tracker().delete(&gvr, namespace, &name)?
                 }
             } else {
                 self.client.tracker().delete(&gvr, namespace, &name)?
-            }
-        } else {
-            self.client.tracker().delete(&gvr, namespace, &name)?
-        };
+            };
 
-        Self::success_response(deleted)
+            Self::success_response(deleted)
+        } else {
+            // Collection deletion - delete all matching objects
+            let list_params = Self::parse_list_params(query);
+
+            // List all objects matching the selectors
+            let mut objects = handle_error!(self
+                .client
+                .tracker()
+                .list(&gvr, parsed.namespace.as_deref()));
+
+            // Apply label selector filtering if specified
+            if let Some(label_selector) = &list_params.label_selector {
+                objects.retain(|obj| Self::matches_label_selector(obj, label_selector));
+            }
+
+            // Apply field selector filtering if specified
+            if let Some(field_selector) = &list_params.field_selector {
+                objects.retain(|obj| Self::matches_field_selector(obj, field_selector));
+            }
+
+            // Delete each matching object
+            let mut deleted_count = 0;
+            for obj in &objects {
+                if let Some(obj_name) = obj
+                    .get("metadata")
+                    .and_then(|m| m.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    // Delete the object (ignore errors for individual deletions)
+                    if self
+                        .client
+                        .tracker()
+                        .delete(&gvr, namespace, obj_name)
+                        .is_ok()
+                    {
+                        deleted_count += 1;
+                    }
+                }
+            }
+
+            // Return Status response indicating success
+            let status_response = serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "status": "Success",
+                "details": {
+                    "kind": Self::resource_to_kind(&parsed.resource),
+                    "group": parsed.group.unwrap_or_default(),
+                    "deleted": deleted_count
+                }
+            });
+
+            Self::success_response(status_response)
+        }
     }
 
     /// Convert crate::Error to proper HTTP response matching Kubernetes API format
