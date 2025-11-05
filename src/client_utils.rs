@@ -4,7 +4,7 @@ use serde_json::Value;
 /// Pluralize a Kubernetes Kind name to its resource plural form.
 ///
 /// Implementation copied from kube-rs to ensure consistency with the broader ecosystem.
-/// See: https://github.com/kube-rs/kube/blob/main/kube-core/src/discovery.rs
+/// See: <https://github.com/kube-rs/kube/blob/main/kube-core/src/discovery.rs>
 ///
 /// Copyright (c) kube-rs contributors
 /// Licensed under Apache-2.0
