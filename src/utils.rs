@@ -1,18 +1,4 @@
-use crate::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-
-pub fn increment_resource_version(current: &str) -> Result<String> {
-    match current {
-        "" => Ok("1".to_string()),
-        "999" => Ok("1".to_string()), // Special tracker add value
-        v => {
-            let num: u64 = v
-                .parse()
-                .map_err(|_| Error::Internal(format!("Invalid resource version: {}", v)))?;
-            Ok((num + 1).to_string())
-        }
-    }
-}
 
 pub fn increment_generation(current: Option<i64>) -> i64 {
     current.unwrap_or(0) + 1

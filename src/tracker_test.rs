@@ -44,7 +44,10 @@ mod tests {
         // Parse and compare to verify RV is globally increasing
         let rv1_num: u64 = rv1.parse().unwrap();
         let rv2_num: u64 = rv2.parse().unwrap();
-        assert!(rv2_num > rv1_num, "Resource version should be globally increasing");
+        assert!(
+            rv2_num > rv1_num,
+            "Resource version should be globally increasing"
+        );
     }
 
     #[test]

@@ -87,7 +87,7 @@ impl ObjectTracker {
             resource_version: Arc::new(AtomicU64::new(0)),
         }
     }
-    
+
     fn next_resource_version(&self) -> String {
         let rv = self.resource_version.fetch_add(1, Ordering::SeqCst) + 1;
         rv.to_string()
