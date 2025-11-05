@@ -1,12 +1,12 @@
 use crate::utils::{
-    deletion_timestamp_equal, ensure_metadata, increment_generation, increment_resource_version,
-    should_be_deleted,
+    deletion_timestamp_equal, ensure_metadata, increment_generation, should_be_deleted,
 };
 use crate::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 
@@ -76,6 +76,7 @@ type ObjectStorage = HashMap<GVR, ObjectsByNamespace>;
 pub struct ObjectTracker {
     objects: Arc<RwLock<ObjectStorage>>,
     with_status_subresource: Arc<RwLock<std::collections::HashSet<GVK>>>,
+    resource_version: Arc<AtomicU64>,
 }
 
 impl ObjectTracker {
@@ -83,7 +84,13 @@ impl ObjectTracker {
         Self {
             objects: Arc::new(RwLock::new(HashMap::new())),
             with_status_subresource: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            resource_version: Arc::new(AtomicU64::new(0)),
         }
+    }
+    
+    fn next_resource_version(&self) -> String {
+        let rv = self.resource_version.fetch_add(1, Ordering::SeqCst) + 1;
+        rv.to_string()
     }
 
     pub fn add_status_subresource(&self, gvk: GVK) {
@@ -121,7 +128,7 @@ impl ObjectTracker {
                 .as_ref()
                 .is_none_or(|rv| rv.is_empty())
         {
-            meta.resource_version = Some("999".to_string());
+            meta.resource_version = Some(self.next_resource_version());
         }
 
         ensure_metadata(&mut meta, namespace);
@@ -177,7 +184,7 @@ impl ObjectTracker {
             });
         }
 
-        meta.resource_version = Some("1".to_string());
+        meta.resource_version = Some(self.next_resource_version());
         ensure_metadata(&mut meta, namespace);
 
         if meta.deletion_timestamp.is_some() {
@@ -260,11 +267,8 @@ impl ObjectTracker {
             }
         }
 
-        let new_rv =
-            increment_resource_version(existing_meta.resource_version.as_deref().unwrap_or(""))?;
-
         let mut new_meta = self.extract_metadata(&object)?;
-        new_meta.resource_version = Some(new_rv);
+        new_meta.resource_version = Some(self.next_resource_version());
         new_meta.uid = existing_meta.uid;
         new_meta.creation_timestamp = existing_meta.creation_timestamp;
 
