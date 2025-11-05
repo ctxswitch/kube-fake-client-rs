@@ -21,7 +21,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_sets_resource_version_999() {
+    fn test_add_sets_globally_increasing_resource_version() {
         let tracker = ObjectTracker::new();
         let gvr = GVR::new("", "v1", "pods");
         let gvk = GVK::new("", "v1", "Pod");
@@ -29,10 +29,25 @@ mod tests {
 
         let added = tracker.add(&gvr, &gvk, obj, "default").unwrap();
         assert_eq!(added["metadata"]["name"], "test-pod");
-        assert_eq!(added["metadata"]["resourceVersion"], "999");
+        // Should have a resource version set (globally increasing)
+        let rv1 = added["metadata"]["resourceVersion"].as_str().unwrap();
+        assert!(!rv1.is_empty());
 
         let retrieved = tracker.get(&gvr, "default", "test-pod").unwrap();
-        assert_eq!(retrieved["metadata"]["resourceVersion"], "999");
+        assert_eq!(retrieved["metadata"]["resourceVersion"], rv1);
+
+        // Add another object and verify RV increases
+        let obj2 = create_test_object("test-pod-2", "default");
+        let added2 = tracker.add(&gvr, &gvk, obj2, "default").unwrap();
+        let rv2 = added2["metadata"]["resourceVersion"].as_str().unwrap();
+
+        // Parse and compare to verify RV is globally increasing
+        let rv1_num: u64 = rv1.parse().unwrap();
+        let rv2_num: u64 = rv2.parse().unwrap();
+        assert!(
+            rv2_num > rv1_num,
+            "Resource version should be globally increasing"
+        );
     }
 
     #[test]
@@ -279,5 +294,85 @@ mod tests {
             .update(&gvr, &gvk, updated_obj, "default", false)
             .unwrap();
         assert_eq!(updated["metadata"]["generation"], 3);
+    }
+
+    #[test]
+    fn test_resource_version_globally_increasing_across_types() {
+        let tracker = ObjectTracker::new();
+
+        // Create a Pod
+        let pod_gvr = GVR::new("", "v1", "pods");
+        let pod_gvk = GVK::new("", "v1", "Pod");
+        let pod = create_test_object("test-pod", "default");
+        let created_pod = tracker.create(&pod_gvr, &pod_gvk, pod, "default").unwrap();
+        let rv1: u64 = created_pod["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // Create a ConfigMap
+        let cm_gvr = GVR::new("", "v1", "configmaps");
+        let cm_gvk = GVK::new("", "v1", "ConfigMap");
+        let cm = json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "test-cm",
+                "namespace": "default",
+            },
+            "data": {
+                "key": "value"
+            }
+        });
+        let created_cm = tracker.create(&cm_gvr, &cm_gvk, cm, "default").unwrap();
+        let rv2: u64 = created_cm["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // Create a Service
+        let svc_gvr = GVR::new("", "v1", "services");
+        let svc_gvk = GVK::new("", "v1", "Service");
+        let svc = json!({
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": "test-svc",
+                "namespace": "default",
+            },
+            "spec": {
+                "ports": [{
+                    "port": 80
+                }]
+            }
+        });
+        let created_svc = tracker.create(&svc_gvr, &svc_gvk, svc, "default").unwrap();
+        let rv3: u64 = created_svc["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        // Verify globally increasing across all resource types
+        assert!(
+            rv2 > rv1,
+            "ConfigMap RV ({}) should be > Pod RV ({})",
+            rv2,
+            rv1
+        );
+        assert!(
+            rv3 > rv2,
+            "Service RV ({}) should be > ConfigMap RV ({})",
+            rv3,
+            rv2
+        );
+        assert!(
+            rv3 > rv1,
+            "Service RV ({}) should be > Pod RV ({})",
+            rv3,
+            rv1
+        );
     }
 }
