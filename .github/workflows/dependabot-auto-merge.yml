@@ -16,6 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      - uses: actions/checkout@v5
+
       - name: ci-check
         id: ci-check
         env:
