@@ -61,6 +61,7 @@ impl DeploymentStatusController {
             .unwrap_or(1);
 
         // Build the status reflecting the current desired state
+        #[cfg(not(feature = "v1_33"))]
         let status = DeploymentStatus {
             replicas: Some(desired_replicas),
             ready_replicas: Some(desired_replicas),
@@ -70,6 +71,19 @@ impl DeploymentStatusController {
             observed_generation: deployment.metadata.generation,
             conditions: None,
             collision_count: None,
+        };
+
+        #[cfg(feature = "v1_33")]
+        let status = DeploymentStatus {
+            replicas: Some(desired_replicas),
+            ready_replicas: Some(desired_replicas),
+            available_replicas: Some(desired_replicas),
+            unavailable_replicas: Some(0),
+            updated_replicas: Some(desired_replicas),
+            observed_generation: deployment.metadata.generation,
+            conditions: None,
+            collision_count: None,
+            terminating_replicas: None,
         };
 
         deployment.status = Some(status);
