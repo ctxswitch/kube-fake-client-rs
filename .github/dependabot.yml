@@ -16,6 +16,9 @@ updates:
       - dependency-name: "kube"
         # Allow updates to 1.x, but block 2.x due to edition2024 compatibility issues
         update-types: ["version-update:semver-major"]
+      - dependency-name: "schemars"
+        # Pin to 0.x, block updates to 1.x
+        update-types: ["version-update:semver-major"]
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"

@@ -41,13 +41,40 @@ k8s-openapi = { version = "0.25", features = ["v1_30"] }
 tokio = { version = "1.0", features = ["full"] }
 ```
 
+**Note**: By default, `kube-fake-client` uses Kubernetes API version 1.30 (`v1_30`). If you need a different version, see the Kubernetes Version Features section below.
+
+### Kubernetes Version Features
+
+The library supports multiple Kubernetes API versions through feature flags. **Only one version feature should be enabled at a time**.
+
+Available versions:
+- `v1_30` (default) - Kubernetes 1.30 API
+- `v1_31` - Kubernetes 1.31 API
+- `v1_32` - Kubernetes 1.32 API
+- `v1_33` - Kubernetes 1.33 API
+
+To use a specific version, disable default features and enable the desired version:
+
+```toml
+[dev-dependencies]
+kube-fake-client = { version = "0.1", default-features = false, features = ["v1_31"] }
+kube = { version = "1.1", features = ["client", "derive"] }
+k8s-openapi = { version = "0.25", features = ["v1_31"] }
+tokio = { version = "1.0", features = ["full"] }
+```
+
+**Important**: Make sure the k8s-openapi version feature matches the kube-fake-client version feature.
+
 ### With OpenAPI Validation (Optional)
 
-To enable runtime schema validation:
+To enable runtime schema validation, add the `validation` feature:
 
 ```toml
 [dev-dependencies]
 kube-fake-client = { version = "0.1", features = ["validation"] }
+
+# Or with a specific Kubernetes version
+kube-fake-client = { version = "0.1", default-features = false, features = ["v1_32", "validation"] }
 ```
 
 ### Dependencies Overview

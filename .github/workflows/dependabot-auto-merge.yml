@@ -1,4 +1,4 @@
-name: Dependabot Auto-Merge
+name: dependabot auto-merge
 
 on:
   pull_request:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
-      - name: Check if CI passed
+      - name: ci-check
         id: ci-check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,7 +49,7 @@ jobs:
           echo "mergeable=$MERGEABLE" >> $GITHUB_OUTPUT
           echo "merge_state=$MERGE_STATE" >> $GITHUB_OUTPUT
 
-      - name: Auto-merge PR
+      - name: auto-merge
         if: steps.ci-check.outputs.mergeable == 'MERGEABLE' && steps.ci-check.outputs.merge_state == 'CLEAN'
         env:
           GH_TOKEN: ${{ github.token }}
