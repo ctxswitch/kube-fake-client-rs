@@ -1,4 +1,10 @@
 //! Basic kube::Api operations with both namespaced and cluster-scoped resources
+//!
+//! Example demonstrating common Kubernetes API operations including:
+//! - Creating, reading, updating, and deleting resources
+//! - Label and field selectors for filtering
+//! - Patching resources
+//! - Working with both namespaced and cluster-scoped resources
 
 use k8s_openapi::api::core::v1::{Container, Node, Pod, PodSpec};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -6,18 +12,68 @@ use kube_fake_client::ClientBuilder;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+/// Create a pod with the given name, namespace, and optional labels
+fn create_pod(name: &str, namespace: &str, labels: Option<BTreeMap<String, String>>) -> Pod {
+    let mut pod = Pod::default();
+    pod.metadata.name = Some(name.to_string());
+    pod.metadata.namespace = Some(namespace.to_string());
+    pod.metadata.labels = labels;
+    pod
+}
+
+/// Create a pod with a container
+fn create_pod_with_container(
+    name: &str,
+    namespace: &str,
+    labels: Option<BTreeMap<String, String>>,
+    container_name: &str,
+    image: &str,
+) -> Pod {
+    let mut pod = create_pod(name, namespace, labels);
+    pod.spec = Some(PodSpec {
+        containers: vec![Container {
+            name: container_name.to_string(),
+            image: Some(image.to_string()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    pod
+}
+
+/// Create a pod scheduled on a specific node
+fn create_pod_on_node(
+    name: &str,
+    namespace: &str,
+    node_name: &str,
+    container_name: &str,
+    image: &str,
+) -> Pod {
+    let mut pod = create_pod_with_container(name, namespace, None, container_name, image);
+    if let Some(spec) = &mut pod.spec {
+        spec.node_name = Some(node_name.to_string());
+    }
+    pod
+}
+
+/// Create a node with the given name and zone label
+fn create_node(name: &str, zone: &str) -> Node {
+    let mut node = Node::default();
+    node.metadata.name = Some(name.to_string());
+    let mut labels = BTreeMap::new();
+    labels.insert("role".to_string(), "worker".to_string());
+    labels.insert("zone".to_string(), zone.to_string());
+    node.metadata.labels = Some(labels);
+    node
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut initial_pod = Pod::default();
-    initial_pod.metadata.name = Some("web-server".to_string());
-    initial_pod.metadata.namespace = Some("default".to_string());
+    let initial_pod = create_pod("web-server", "default", None);
 
-    let mut api_pod = Pod::default();
-    api_pod.metadata.name = Some("api-server".to_string());
-    api_pod.metadata.namespace = Some("default".to_string());
     let mut labels = BTreeMap::new();
     labels.insert("app".to_string(), "backend".to_string());
-    api_pod.metadata.labels = Some(labels);
+    let api_pod = create_pod("api-server", "default", Some(labels));
 
     let client = ClientBuilder::new()
         .with_objects(vec![initial_pod, api_pod])
@@ -33,20 +89,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  - {}", pod.metadata.name.as_ref().unwrap());
     }
 
-    let mut new_pod = Pod::default();
-    new_pod.metadata.name = Some("nginx".to_string());
-    let mut labels = BTreeMap::new();
-    labels.insert("app".to_string(), "frontend".to_string());
-    labels.insert("env".to_string(), "dev".to_string());
-    new_pod.metadata.labels = Some(labels);
-    new_pod.spec = Some(PodSpec {
-        containers: vec![Container {
-            name: "nginx".to_string(),
-            image: Some("nginx:latest".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    });
+    let mut nginx_labels = BTreeMap::new();
+    nginx_labels.insert("app".to_string(), "frontend".to_string());
+    nginx_labels.insert("env".to_string(), "dev".to_string());
+    let new_pod = create_pod_with_container(
+        "nginx",
+        "default",
+        Some(nginx_labels),
+        "nginx",
+        "nginx:latest",
+    );
 
     let created = pods.create(&PostParams::default(), &new_pod).await?;
     println!("\nCreated pod: {}", created.metadata.name.as_ref().unwrap());
@@ -78,17 +130,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Create a pod with node name for Pod-specific field selector example
-    let mut scheduled_pod = Pod::default();
-    scheduled_pod.metadata.name = Some("scheduled-pod".to_string());
-    scheduled_pod.spec = Some(PodSpec {
-        node_name: Some("worker-node-1".to_string()),
-        containers: vec![Container {
-            name: "app".to_string(),
-            image: Some("app:latest".to_string()),
-            ..Default::default()
-        }],
-        ..Default::default()
-    });
+    let scheduled_pod = create_pod_on_node(
+        "scheduled-pod",
+        "default",
+        "worker-node-1",
+        "app",
+        "app:latest",
+    );
     pods.create(&PostParams::default(), &scheduled_pod).await?;
 
     // Pod-specific pre-registered field selector (spec.nodeName)
@@ -179,12 +227,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create nodes
     println!("Creating nodes...");
     for i in 1..=3 {
-        let mut node = Node::default();
-        node.metadata.name = Some(format!("worker-{}", i));
-        let mut labels = BTreeMap::new();
-        labels.insert("role".to_string(), "worker".to_string());
-        labels.insert("zone".to_string(), format!("zone-{}", (i % 2) + 1));
-        node.metadata.labels = Some(labels);
+        let zone = format!("zone-{}", (i % 2) + 1);
+        let node = create_node(&format!("worker-{}", i), &zone);
         nodes.create(&PostParams::default(), &node).await?;
     }
 

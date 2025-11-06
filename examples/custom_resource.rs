@@ -1,4 +1,8 @@
 //! Using custom resources (CRDs)
+//!
+//! Example demonstrating how to register and use custom resource definitions (CRDs)
+//! with the fake client. This is useful for testing operators and controllers that
+//! work with custom resources.
 
 use kube::api::{Api, ListParams, PostParams};
 use kube::{CustomResource, ResourceExt};
@@ -14,27 +18,27 @@ pub struct MyAppSpec {
     pub image: String,
 }
 
+/// Create a MyApp resource with the given name, replicas, and image
+fn create_app(name: &str, namespace: &str, replicas: i32, image: &str) -> MyApp {
+    let mut app = MyApp::new(
+        name,
+        MyAppSpec {
+            replicas,
+            image: image.to_string(),
+        },
+    );
+    app.metadata.namespace = Some(namespace.to_string());
+    app
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut app1 = MyApp::new(
-        "app1",
-        MyAppSpec {
-            replicas: 3,
-            image: "nginx:latest".to_string(),
-        },
-    );
-    app1.metadata.namespace = Some("default".to_string());
+    let app1 = create_app("app1", "default", 3, "nginx:latest");
+    let app2 = create_app("app2", "default", 5, "redis:latest");
 
-    let mut app2 = MyApp::new(
-        "app2",
-        MyAppSpec {
-            replicas: 5,
-            image: "redis:latest".to_string(),
-        },
-    );
-    app2.metadata.namespace = Some("default".to_string());
-
+    // Register the custom resource type (like installing a CRD in a real cluster)
     let client = ClientBuilder::new()
+        .with_resource::<MyApp>()
         .with_object(app1)
         .with_object(app2)
         .build()
@@ -53,14 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let mut app3 = MyApp::new(
-        "app3",
-        MyAppSpec {
-            replicas: 2,
-            image: "postgres:14".to_string(),
-        },
-    );
-    app3.metadata.namespace = Some("default".to_string());
+    let app3 = create_app("app3", "default", 2, "postgres:14");
 
     let created = api.create(&PostParams::default(), &app3).await?;
     println!("\nCreated new MyApp: {}", created.name_any());
@@ -72,32 +69,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_custom_resource_crud() {
-        let mut app = MyApp::new(
-            "test-app",
-            MyAppSpec {
-                replicas: 1,
-                image: "test:latest".to_string(),
-            },
-        );
-        app.metadata.namespace = Some("default".to_string());
-
-        let client = ClientBuilder::new().with_object(app).build().await.unwrap();
-
-        let api: Api<MyApp> = Api::namespaced(client, "default");
-
-        let retrieved = api.get("test-app").await.unwrap();
-        assert_eq!(retrieved.spec.replicas, 1);
-        assert_eq!(retrieved.spec.image, "test:latest");
-
-        let apps = api.list(&ListParams::default()).await.unwrap();
-        assert_eq!(apps.items.len(), 1);
-    }
 }

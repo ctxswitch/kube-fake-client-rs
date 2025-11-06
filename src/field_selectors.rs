@@ -5,6 +5,37 @@
 
 use serde_json::Value;
 
+/// Helper to extract a string field at a given path (e.g., "spec", "nodeName")
+fn get_string_field(obj: &Value, parent: &str, field: &str) -> Option<Vec<String>> {
+    obj.get(parent)
+        .and_then(|p| p.get(field))
+        .and_then(|v| v.as_str())
+        .map(|s| vec![s.to_string()])
+}
+
+/// Helper to extract a boolean field at a given path
+fn get_bool_field(obj: &Value, parent: &str, field: &str) -> Option<Vec<String>> {
+    obj.get(parent)
+        .and_then(|p| p.get(field))
+        .and_then(|v| v.as_bool())
+        .map(|b| vec![b.to_string()])
+}
+
+/// Helper to extract an integer field at a given path
+fn get_int_field(obj: &Value, parent: &str, field: &str) -> Option<Vec<String>> {
+    obj.get(parent)
+        .and_then(|p| p.get(field))
+        .and_then(|v| v.as_i64())
+        .map(|n| vec![n.to_string()])
+}
+
+/// Helper to extract a top-level string field
+fn get_top_level_string(obj: &Value, field: &str) -> Option<Vec<String>> {
+    obj.get(field)
+        .and_then(|v| v.as_str())
+        .map(|s| vec![s.to_string()])
+}
+
 /// Extract value from pre-registered field paths that are supported by Kubernetes
 /// without requiring an index. Based on official Kubernetes documentation:
 /// <https://kubernetes.io/docs/concepts/overview/working-with-objects/field-selectors/>
@@ -21,167 +52,70 @@ pub fn extract_preregistered_field_value(
 ) -> Option<Vec<String>> {
     // Universal metadata fields (supported by all resources)
     match field {
-        "metadata.name" => {
-            return obj_value
-                .get("metadata")
-                .and_then(|m| m.get("name"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]);
-        }
-        "metadata.namespace" => {
-            return obj_value
-                .get("metadata")
-                .and_then(|m| m.get("namespace"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]);
-        }
+        "metadata.name" => return get_string_field(obj_value, "metadata", "name"),
+        "metadata.namespace" => return get_string_field(obj_value, "metadata", "namespace"),
         _ => {}
     }
 
     // Resource-specific pre-registered fields
     match kind {
         "Pod" => match field {
-            "spec.nodeName" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("nodeName"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "spec.restartPolicy" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("restartPolicy"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "spec.schedulerName" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("schedulerName"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "spec.serviceAccountName" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("serviceAccountName"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "spec.hostNetwork" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("hostNetwork"))
-                .and_then(|b| b.as_bool())
-                .map(|b| vec![b.to_string()]),
-            "status.phase" => obj_value
-                .get("status")
-                .and_then(|s| s.get("phase"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "status.podIP" => obj_value
-                .get("status")
-                .and_then(|s| s.get("podIP"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "status.nominatedNodeName" => obj_value
-                .get("status")
-                .and_then(|s| s.get("nominatedNodeName"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
+            "spec.nodeName" => get_string_field(obj_value, "spec", "nodeName"),
+            "spec.restartPolicy" => get_string_field(obj_value, "spec", "restartPolicy"),
+            "spec.schedulerName" => get_string_field(obj_value, "spec", "schedulerName"),
+            "spec.serviceAccountName" => get_string_field(obj_value, "spec", "serviceAccountName"),
+            "spec.hostNetwork" => get_bool_field(obj_value, "spec", "hostNetwork"),
+            "status.phase" => get_string_field(obj_value, "status", "phase"),
+            "status.podIP" => get_string_field(obj_value, "status", "podIP"),
+            "status.nominatedNodeName" => {
+                get_string_field(obj_value, "status", "nominatedNodeName")
+            }
             _ => None,
         },
         "Event" => match field {
-            "involvedObject.kind" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("kind"))
-                .and_then(|k| k.as_str())
-                .map(|s| vec![s.to_string()]),
-            "involvedObject.namespace" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("namespace"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "involvedObject.name" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("name"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
-            "involvedObject.uid" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("uid"))
-                .and_then(|u| u.as_str())
-                .map(|s| vec![s.to_string()]),
-            "involvedObject.apiVersion" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("apiVersion"))
-                .and_then(|a| a.as_str())
-                .map(|s| vec![s.to_string()]),
-            "involvedObject.resourceVersion" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("resourceVersion"))
-                .and_then(|r| r.as_str())
-                .map(|s| vec![s.to_string()]),
-            "involvedObject.fieldPath" => obj_value
-                .get("involvedObject")
-                .and_then(|o| o.get("fieldPath"))
-                .and_then(|f| f.as_str())
-                .map(|s| vec![s.to_string()]),
-            "reason" => obj_value
-                .get("reason")
-                .and_then(|r| r.as_str())
-                .map(|s| vec![s.to_string()]),
-            "reportingComponent" => obj_value
-                .get("reportingComponent")
-                .and_then(|r| r.as_str())
-                .map(|s| vec![s.to_string()]),
-            "source" => obj_value
-                .get("source")
-                .and_then(|s| s.as_str())
-                .map(|s| vec![s.to_string()]),
-            "type" => obj_value
-                .get("type")
-                .and_then(|t| t.as_str())
-                .map(|s| vec![s.to_string()]),
+            "involvedObject.kind" => get_string_field(obj_value, "involvedObject", "kind"),
+            "involvedObject.namespace" => {
+                get_string_field(obj_value, "involvedObject", "namespace")
+            }
+            "involvedObject.name" => get_string_field(obj_value, "involvedObject", "name"),
+            "involvedObject.uid" => get_string_field(obj_value, "involvedObject", "uid"),
+            "involvedObject.apiVersion" => {
+                get_string_field(obj_value, "involvedObject", "apiVersion")
+            }
+            "involvedObject.resourceVersion" => {
+                get_string_field(obj_value, "involvedObject", "resourceVersion")
+            }
+            "involvedObject.fieldPath" => {
+                get_string_field(obj_value, "involvedObject", "fieldPath")
+            }
+            "reason" => get_top_level_string(obj_value, "reason"),
+            "reportingComponent" => get_top_level_string(obj_value, "reportingComponent"),
+            "source" => get_top_level_string(obj_value, "source"),
+            "type" => get_top_level_string(obj_value, "type"),
             _ => None,
         },
         "Secret" => match field {
-            "type" => obj_value
-                .get("type")
-                .and_then(|t| t.as_str())
-                .map(|s| vec![s.to_string()]),
+            "type" => get_top_level_string(obj_value, "type"),
             _ => None,
         },
         "Namespace" => match field {
-            "status.phase" => obj_value
-                .get("status")
-                .and_then(|s| s.get("phase"))
-                .and_then(|p| p.as_str())
-                .map(|s| vec![s.to_string()]),
+            "status.phase" => get_string_field(obj_value, "status", "phase"),
             _ => None,
         },
         "ReplicaSet" | "ReplicationController" => match field {
-            "status.replicas" => obj_value
-                .get("status")
-                .and_then(|s| s.get("replicas"))
-                .and_then(|r| r.as_i64())
-                .map(|n| vec![n.to_string()]),
+            "status.replicas" => get_int_field(obj_value, "status", "replicas"),
             _ => None,
         },
         "Job" => match field {
-            "status.successful" => obj_value
-                .get("status")
-                .and_then(|s| s.get("successful"))
-                .and_then(|r| r.as_i64())
-                .map(|n| vec![n.to_string()]),
+            "status.successful" => get_int_field(obj_value, "status", "successful"),
             _ => None,
         },
         "Node" => match field {
-            "spec.unschedulable" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("unschedulable"))
-                .and_then(|b| b.as_bool())
-                .map(|b| vec![b.to_string()]),
+            "spec.unschedulable" => get_bool_field(obj_value, "spec", "unschedulable"),
             _ => None,
         },
         "CertificateSigningRequest" => match field {
-            "spec.signerName" => obj_value
-                .get("spec")
-                .and_then(|s| s.get("signerName"))
-                .and_then(|n| n.as_str())
-                .map(|s| vec![s.to_string()]),
+            "spec.signerName" => get_string_field(obj_value, "spec", "signerName"),
             _ => None,
         },
         _ => None,

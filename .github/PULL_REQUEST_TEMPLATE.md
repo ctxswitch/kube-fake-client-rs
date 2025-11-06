@@ -14,10 +14,6 @@
 - [ ] Performance improvement
 - [ ] Test updates
 
-## Additional Notes
-
-<!-- Any additional information that reviewers should know -->
-
 ## Stack Information
 
 <!-- This section is automatically updated by the update-pr-stack workflow -->

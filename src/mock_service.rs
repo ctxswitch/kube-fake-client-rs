@@ -2,6 +2,7 @@
 
 use crate::client::FakeClient;
 use crate::client_utils::extract_gvk;
+use crate::discovery::Discovery;
 use crate::error::Error;
 use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
@@ -18,6 +19,13 @@ use std::collections::BTreeMap;
 use std::task::{Context, Poll};
 use tower::Service;
 
+/// Content type constants
+const CONTENT_TYPE_JSON: &str = "application/json";
+const CONTENT_TYPE_JSON_PATCH: &str = "application/json-patch+json";
+const CONTENT_TYPE_MERGE_PATCH: &str = "application/merge-patch+json";
+const CONTENT_TYPE_STRATEGIC_MERGE: &str = "application/strategic-merge-patch+json";
+const CONTENT_TYPE_APPLY_PATCH: &str = "application/apply-patch+yaml";
+
 /// Macro to handle crate::Error conversion to HTTP response
 macro_rules! handle_error {
     ($result:expr) => {
@@ -29,6 +37,7 @@ macro_rules! handle_error {
 }
 
 /// Parsed Kubernetes API path information
+#[derive(Debug, Clone)]
 struct ParsedPath {
     group: Option<String>,
     version: String,
@@ -68,8 +77,6 @@ impl MockService {
     /// - /api/v1/namespaces/default/pods/my-pod (namespaced with name)
     /// - /apis/apps/v1/namespaces/default/deployments (namespaced with group)
     /// - /api/v1/nodes (cluster-scoped)
-    /// - /api/v1/nodes/node-1 (cluster-scoped with name)
-    /// - /apis/rbac.authorization.k8s.io/v1/clusterroles (cluster-scoped with group)
     fn parse_path(path: &str) -> Option<ParsedPath> {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -100,47 +107,60 @@ impl MockService {
                 return None;
             }
 
-            let namespace = Some(parts[version_idx + 2].to_string());
-            let resource = parts[version_idx + 3].to_string();
-            let name = parts.get(version_idx + 4).map(|s| s.to_string());
-
             Some(ParsedPath {
                 group,
                 version,
-                namespace,
-                resource,
-                name,
+                namespace: Some(parts[version_idx + 2].to_string()),
+                resource: parts[version_idx + 3].to_string(),
+                name: parts.get(version_idx + 4).map(|s| s.to_string()),
             })
         } else {
             // Cluster-scoped resource: /api/v1/{resource}[/{name}]
-            let resource = parts[version_idx + 1].to_string();
-            let name = parts.get(version_idx + 2).map(|s| s.to_string());
-
             Some(ParsedPath {
                 group,
                 version,
                 namespace: None,
-                resource,
-                name,
+                resource: parts[version_idx + 1].to_string(),
+                name: parts.get(version_idx + 2).map(|s| s.to_string()),
             })
         }
     }
 
-    /// Convert resource plural to singular kind (simplified)
-    fn resource_to_kind(resource: &str) -> String {
-        // Simple heuristic: remove trailing 's'
-        if let Some(base) = resource.strip_suffix("ies") {
-            format!("{}y", base)
-        } else if resource.ends_with("ses")
-            || resource.ends_with("xes")
-            || resource.ends_with("zes")
-        {
-            resource[..resource.len() - 2].to_string()
-        } else if let Some(base) = resource.strip_suffix('s') {
-            base.to_string()
-        } else {
-            resource.to_string()
+    /// Convert resource plural to Kind using discovery + registry
+    fn resource_to_kind(
+        &self,
+        group: &str,
+        version: &str,
+        resource: &str,
+    ) -> Result<String, Error> {
+        Discovery::plural_to_kind_with_registry(group, version, resource, &self.client.registry)
+            .map(|k| k.into_owned())
+            .ok_or_else(|| Error::ResourceNotRegistered {
+                group: group.to_string(),
+                version: version.to_string(),
+                resource: resource.to_string(),
+            })
+    }
+
+    /// Extract namespace from parsed path, defaulting to empty string for cluster-scoped
+    fn extract_namespace(parsed: &ParsedPath) -> String {
+        parsed.namespace.as_deref().unwrap_or("").to_string()
+    }
+
+    /// Build API version string from group and version
+    fn build_api_version(group: &Option<String>, version: &str) -> String {
+        match group {
+            Some(g) => format!("{g}/{version}"),
+            None => version.to_string(),
         }
+    }
+
+    /// Extract object name from metadata
+    fn extract_object_name(obj: &Value) -> Option<String> {
+        obj.get("metadata")
+            .and_then(|m| m.get("name"))
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string())
     }
 
     /// Parse query parameters from URL and create ListParams
@@ -150,7 +170,6 @@ impl MockService {
         if let Some(query_str) = query {
             for pair in query_str.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
-                    // URL-decode the value
                     let decoded_value =
                         urlencoding::decode(value).unwrap_or(std::borrow::Cow::Borrowed(value));
 
@@ -180,27 +199,26 @@ impl MockService {
         params
     }
 
+    /// Check if object matches label selector
     fn matches_label_selector(obj: &Value, selector: &str) -> bool {
         let labels_obj = obj
             .get("metadata")
             .and_then(|m| m.get("labels"))
             .and_then(|l| l.as_object());
 
-        let labels: BTreeMap<String, String> = if let Some(labels_obj) = labels_obj {
-            labels_obj
-                .iter()
-                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                .collect()
-        } else {
-            BTreeMap::new()
-        };
+        let labels: BTreeMap<String, String> = labels_obj
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         label_selector::matches_label_selector(&labels, selector).unwrap_or(false)
     }
 
     /// Check if object matches field selector (uses pre-registered fields)
     fn matches_field_selector(obj: &Value, selector: &str) -> bool {
-        // Extract kind from object to determine which fields are available
         let kind = obj.get("kind").and_then(|k| k.as_str()).unwrap_or("");
 
         for requirement in selector.split(',') {
@@ -209,10 +227,8 @@ impl MockService {
                 let field = field.trim_end_matches('=');
                 let expected_value = expected_value.trim();
 
-                // Try to extract the field value using pre-registered fields
                 let values = extract_preregistered_field_value(obj, field, kind);
 
-                // Check if any of the values match the expected value
                 if !values.is_some_and(|v| v.iter().any(|val| val == expected_value)) {
                     return false;
                 }
@@ -224,14 +240,11 @@ impl MockService {
     /// Determine patch type from Content-Type header
     fn determine_patch_type(content_type: Option<&str>) -> PatchType {
         match content_type {
-            Some(ct) if ct.contains("application/json-patch+json") => PatchType::JsonPatch,
-            Some(ct) if ct.contains("application/merge-patch+json") => PatchType::MergePatch,
-            Some(ct) if ct.contains("application/strategic-merge-patch+json") => {
-                PatchType::StrategicMergePatch
-            }
-            Some(ct) if ct.contains("application/apply-patch+yaml") => PatchType::ApplyPatch,
-            // Default to Strategic Merge Patch for Kubernetes compatibility
-            _ => PatchType::StrategicMergePatch,
+            Some(ct) if ct.contains(CONTENT_TYPE_JSON_PATCH) => PatchType::JsonPatch,
+            Some(ct) if ct.contains(CONTENT_TYPE_MERGE_PATCH) => PatchType::MergePatch,
+            Some(ct) if ct.contains(CONTENT_TYPE_STRATEGIC_MERGE) => PatchType::StrategicMergePatch,
+            Some(ct) if ct.contains(CONTENT_TYPE_APPLY_PATCH) => PatchType::ApplyPatch,
+            _ => PatchType::StrategicMergePatch, // Default for Kubernetes compatibility
         }
     }
 
@@ -243,26 +256,78 @@ impl MockService {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match patch_type {
             PatchType::JsonPatch => {
-                // RFC 6902 JSON Patch - array of operations
                 let patch_doc: json_patch::Patch = serde_json::from_value(patch.clone())?;
                 json_patch::patch(existing, &patch_doc)?;
             }
-            PatchType::MergePatch => {
-                // RFC 7386 JSON Merge Patch
-                json_patch::merge(existing, patch);
-            }
-            PatchType::StrategicMergePatch => {
-                // For now, treat Strategic Merge Patch like Merge Patch
+            PatchType::MergePatch | PatchType::StrategicMergePatch | PatchType::ApplyPatch => {
+                // For now, treat all merge-style patches the same
                 // Full strategic merge would require schema knowledge
-                json_patch::merge(existing, patch);
-            }
-            PatchType::ApplyPatch => {
-                // For now, treat Server-Side Apply like Merge Patch
-                // Full SSA would require field management and ownership tracking
                 json_patch::merge(existing, patch);
             }
         }
         Ok(())
+    }
+
+    /// Execute interceptor or default action for GET operations
+    fn execute_get_with_interceptor(
+        &self,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+        is_status: bool,
+    ) -> std::result::Result<Value, Error> {
+        if let Some(ref interceptors) = self.client.interceptors {
+            if is_status {
+                if let Some(ref get_status_interceptor) = interceptors.get_status {
+                    let ctx = interceptor::GetStatusContext {
+                        client: &self.client,
+                        namespace,
+                        name,
+                    };
+                    return match get_status_interceptor(ctx) {
+                        Ok(Some(result)) => Ok(result),
+                        Ok(None) => self.client.tracker().get(gvr, namespace, name),
+                        Err(e) => Err(e),
+                    };
+                }
+            } else if let Some(ref get_interceptor) = interceptors.get {
+                let ctx = interceptor::GetContext {
+                    client: &self.client,
+                    namespace,
+                    name,
+                };
+                return match get_interceptor(ctx) {
+                    Ok(Some(result)) => Ok(result),
+                    Ok(None) => self.client.tracker().get(gvr, namespace, name),
+                    Err(e) => Err(e),
+                };
+            }
+        }
+        self.client.tracker().get(gvr, namespace, name)
+    }
+
+    /// Execute interceptor or default action for LIST operations
+    fn execute_list_with_interceptor(
+        &self,
+        gvr: &GVR,
+        namespace: Option<&str>,
+        params: &ListParams,
+    ) -> std::result::Result<Vec<Value>, Error> {
+        if let Some(ref interceptors) = self.client.interceptors {
+            if let Some(ref list_interceptor) = interceptors.list {
+                let ctx = interceptor::ListContext {
+                    client: &self.client,
+                    namespace,
+                    params,
+                };
+                return match list_interceptor(ctx) {
+                    Ok(Some(result)) => Ok(result),
+                    Ok(None) => self.client.tracker().list(gvr, namespace),
+                    Err(e) => Err(e),
+                };
+            }
+        }
+        self.client.tracker().list(gvr, namespace)
     }
 
     async fn handle_request(
@@ -286,7 +351,7 @@ impl MockService {
             collected.to_bytes()
         };
 
-        // Parse the request based on HTTP method and path
+        // Route based on HTTP method
         match method.as_str() {
             "GET" => self.handle_get(&path, query.as_deref()).await,
             "POST" => self.handle_post(&path, body_bytes).await,
@@ -306,6 +371,12 @@ impl MockService {
         query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
+        let namespace = Self::extract_namespace(&parsed);
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
 
         let gvr = GVR::new(
             parsed.group.clone().unwrap_or_default(),
@@ -313,126 +384,50 @@ impl MockService {
             parsed.resource.clone(),
         );
 
-        // Convert Option<String> to &str, using empty string for cluster-scoped resources
-        let namespace = parsed.namespace.as_deref().unwrap_or("");
+        let gvk = crate::tracker::GVK::new(
+            parsed.group.clone().unwrap_or_default(),
+            parsed.version.clone(),
+            &kind,
+        );
 
         if let Some(name) = parsed.name {
+            // GET single object
+            handle_error!(self.client.validate_verb(&gvk, "get"));
             let is_status = path.ends_with("/status");
 
-            let obj = if let Some(ref interceptors) = self.client.interceptors {
-                if is_status {
-                    if let Some(ref get_status_interceptor) = interceptors.get_status {
-                        let ctx = interceptor::GetStatusContext {
-                            client: &self.client,
-                            namespace,
-                            name: &name,
-                        };
-
-                        match get_status_interceptor(ctx) {
-                            Ok(Some(result)) => result,
-                            Ok(None) => {
-                                handle_error!(self.client.tracker().get(&gvr, namespace, &name))
-                            }
-                            Err(e) => {
-                                return Self::error_response(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    &format!("Interceptor error: {}", e),
-                                );
-                            }
-                        }
-                    } else {
-                        handle_error!(self.client.tracker().get(&gvr, namespace, &name))
-                    }
-                } else if let Some(ref get_interceptor) = interceptors.get {
-                    let ctx = interceptor::GetContext {
-                        client: &self.client,
-                        namespace,
-                        name: &name,
-                    };
-
-                    match get_interceptor(ctx) {
-                        Ok(Some(result)) => result,
-                        Ok(None) => {
-                            handle_error!(self.client.tracker().get(&gvr, namespace, &name))
-                        }
-                        Err(e) => {
-                            return Self::error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                &format!("Interceptor error: {}", e),
-                            );
-                        }
-                    }
-                } else {
-                    handle_error!(self.client.tracker().get(&gvr, namespace, &name))
-                }
-            } else {
-                handle_error!(self.client.tracker().get(&gvr, namespace, &name))
-            };
-
+            let obj = handle_error!(
+                self.execute_get_with_interceptor(&gvr, &namespace, &name, is_status)
+            );
             Self::success_response(obj)
         } else {
-            let kind = Self::resource_to_kind(&parsed.resource);
+            // LIST objects
+            handle_error!(self.client.validate_verb(&gvk, "list"));
+
             let list_params = Self::parse_list_params(query);
+            let mut objects = handle_error!(self.execute_list_with_interceptor(
+                &gvr,
+                parsed.namespace.as_deref(),
+                &list_params
+            ));
 
-            let mut objects = if let Some(ref interceptors) = self.client.interceptors {
-                if let Some(ref list_interceptor) = interceptors.list {
-                    let ctx = interceptor::ListContext {
-                        client: &self.client,
-                        namespace: parsed.namespace.as_deref(),
-                        params: &list_params,
-                    };
-
-                    match list_interceptor(ctx) {
-                        Ok(Some(result)) => result,
-                        Ok(None) => handle_error!(self
-                            .client
-                            .tracker()
-                            .list(&gvr, parsed.namespace.as_deref())),
-                        Err(e) => {
-                            return Self::error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                &format!("Interceptor error: {}", e),
-                            );
-                        }
-                    }
-                } else {
-                    handle_error!(self
-                        .client
-                        .tracker()
-                        .list(&gvr, parsed.namespace.as_deref()))
-                }
-            } else {
-                handle_error!(self
-                    .client
-                    .tracker()
-                    .list(&gvr, parsed.namespace.as_deref()))
-            };
-
-            // Apply label selector filtering if specified
+            // Apply selectors
             if let Some(label_selector) = &list_params.label_selector {
                 objects.retain(|obj| Self::matches_label_selector(obj, label_selector));
             }
 
-            // Apply field selector filtering if specified
             if let Some(field_selector) = &list_params.field_selector {
                 objects.retain(|obj| Self::matches_field_selector(obj, field_selector));
             }
 
-            // Apply limit if specified
+            // Apply limit
             if let Some(limit) = list_params.limit {
                 objects.truncate(limit as usize);
             }
 
             let list = serde_json::json!({
-                "kind": format!("{}List", kind),
-                "apiVersion": if let Some(g) = parsed.group {
-                    format!("{}/{}", g, parsed.version)
-                } else {
-                    parsed.version
-                },
-                "metadata": {
-                    "resourceVersion": "1"
-                },
+                "kind": format!("{kind}List"),
+                "apiVersion": Self::build_api_version(&parsed.group, &parsed.version),
+                "metadata": { "resourceVersion": "1" },
                 "items": objects
             });
 
@@ -446,20 +441,18 @@ impl MockService {
         body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
-
-        // Convert Option<String> to &str, using empty string for cluster-scoped resources
-        let namespace = parsed.namespace.as_deref().unwrap_or("");
+        let namespace = Self::extract_namespace(&parsed);
 
         let mut obj: Value = serde_json::from_slice(&body)?;
 
-        // Ensure apiVersion and kind are set
-        let kind = Self::resource_to_kind(&parsed.resource);
-        let api_version = if let Some(ref g) = parsed.group {
-            format!("{}/{}", g, parsed.version)
-        } else {
-            parsed.version.clone()
-        };
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
 
+        // Ensure apiVersion and kind are set
+        let api_version = Self::build_api_version(&parsed.group, &parsed.version);
         if obj.get("apiVersion").is_none() {
             obj["apiVersion"] = serde_json::json!(api_version);
         }
@@ -474,29 +467,29 @@ impl MockService {
         );
         let gvk = extract_gvk(&obj)?;
 
+        handle_error!(self.client.validate_verb(&gvk, "create"));
+
         let created = if let Some(ref interceptors) = self.client.interceptors {
             if let Some(ref create_interceptor) = interceptors.create {
                 let ctx = interceptor::CreateContext {
                     client: &self.client,
                     object: &obj,
-                    namespace,
+                    namespace: &namespace,
                     params: &PostParams::default(),
                 };
 
                 match create_interceptor(ctx) {
                     Ok(Some(result)) => result,
                     Ok(None) => {
-                        handle_error!(self.client.tracker().create(&gvr, &gvk, obj, namespace))
+                        handle_error!(self.client.tracker().create(&gvr, &gvk, obj, &namespace))
                     }
-                    Err(e) => {
-                        return Self::error_to_response(e);
-                    }
+                    Err(e) => return Self::error_to_response(e),
                 }
             } else {
-                handle_error!(self.client.tracker().create(&gvr, &gvk, obj, namespace))
+                handle_error!(self.client.tracker().create(&gvr, &gvk, obj, &namespace))
             }
         } else {
-            handle_error!(self.client.tracker().create(&gvr, &gvk, obj, namespace))
+            handle_error!(self.client.tracker().create(&gvr, &gvk, obj, &namespace))
         };
 
         Self::success_response_with_status(created, StatusCode::CREATED)
@@ -508,20 +501,18 @@ impl MockService {
         body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
-
-        // Convert Option<String> to &str, using empty string for cluster-scoped resources
-        let namespace = parsed.namespace.as_deref().unwrap_or("");
-
+        let namespace = Self::extract_namespace(&parsed);
         let name = parsed.name.as_ref().ok_or("Name required for PUT")?;
+
         let mut obj: Value = serde_json::from_slice(&body)?;
 
-        let kind = Self::resource_to_kind(&parsed.resource);
-        let api_version = if let Some(ref g) = parsed.group {
-            format!("{}/{}", g, parsed.version)
-        } else {
-            parsed.version.clone()
-        };
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
 
+        let api_version = Self::build_api_version(&parsed.group, &parsed.version);
         if obj.get("apiVersion").is_none() {
             obj["apiVersion"] = serde_json::json!(api_version);
         }
@@ -535,8 +526,9 @@ impl MockService {
             parsed.resource,
         );
         let gvk = extract_gvk(&obj)?;
-
         let is_status = path.ends_with("/status");
+
+        handle_error!(self.client.validate_verb(&gvk, "update"));
 
         let updated = if let Some(ref interceptors) = self.client.interceptors {
             if is_status {
@@ -544,7 +536,7 @@ impl MockService {
                     let ctx = interceptor::ReplaceStatusContext {
                         client: &self.client,
                         object: &obj,
-                        namespace,
+                        namespace: &namespace,
                         name,
                         params: &PostParams::default(),
                     };
@@ -554,22 +546,20 @@ impl MockService {
                         Ok(None) => handle_error!(self
                             .client
                             .tracker()
-                            .update(&gvr, &gvk, obj, namespace, true)),
-                        Err(e) => {
-                            return Self::error_to_response(e);
-                        }
+                            .update(&gvr, &gvk, obj, &namespace, true)),
+                        Err(e) => return Self::error_to_response(e),
                     }
                 } else {
                     handle_error!(self
                         .client
                         .tracker()
-                        .update(&gvr, &gvk, obj, namespace, true))
+                        .update(&gvr, &gvk, obj, &namespace, true))
                 }
             } else if let Some(ref replace_interceptor) = interceptors.replace {
                 let ctx = interceptor::ReplaceContext {
                     client: &self.client,
                     object: &obj,
-                    namespace,
+                    namespace: &namespace,
                     name,
                     params: &PostParams::default(),
                 };
@@ -579,22 +569,20 @@ impl MockService {
                     Ok(None) => handle_error!(self
                         .client
                         .tracker()
-                        .update(&gvr, &gvk, obj, namespace, false)),
-                    Err(e) => {
-                        return Self::error_to_response(e);
-                    }
+                        .update(&gvr, &gvk, obj, &namespace, false)),
+                    Err(e) => return Self::error_to_response(e),
                 }
             } else {
                 handle_error!(self
                     .client
                     .tracker()
-                    .update(&gvr, &gvk, obj, namespace, false))
+                    .update(&gvr, &gvk, obj, &namespace, false))
             }
         } else {
             handle_error!(self
                 .client
                 .tracker()
-                .update(&gvr, &gvk, obj, namespace, is_status))
+                .update(&gvr, &gvk, obj, &namespace, is_status))
         };
 
         Self::success_response(updated)
@@ -607,23 +595,27 @@ impl MockService {
         content_type: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
-
-        // Convert Option<String> to &str, using empty string for cluster-scoped resources
-        let namespace = parsed.namespace.as_deref().unwrap_or("");
-
+        let namespace = Self::extract_namespace(&parsed);
         let name = parsed.name.ok_or("Name required for PATCH")?;
-        let patch: Value = serde_json::from_slice(&body)?;
 
-        // Determine patch type from Content-Type header
+        let patch: Value = serde_json::from_slice(&body)?;
         let patch_type = Self::determine_patch_type(content_type);
 
         let gvr = GVR::new(
-            parsed.group.unwrap_or_default(),
-            parsed.version,
-            parsed.resource,
+            parsed.group.clone().unwrap_or_default(),
+            parsed.version.clone(),
+            parsed.resource.clone(),
         );
 
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
+        let gvk = crate::tracker::GVK::new(parsed.group.unwrap_or_default(), parsed.version, &kind);
         let is_status = path.ends_with("/status");
+
+        handle_error!(self.client.validate_verb(&gvk, "patch"));
 
         let updated = if let Some(ref interceptors) = self.client.interceptors {
             if is_status {
@@ -631,7 +623,7 @@ impl MockService {
                     let ctx = interceptor::PatchStatusContext {
                         client: &self.client,
                         patch: &patch,
-                        namespace,
+                        namespace: &namespace,
                         name: &name,
                         params: &PatchParams::default(),
                     };
@@ -640,34 +632,31 @@ impl MockService {
                         Ok(Some(result)) => result,
                         Ok(None) => {
                             let mut existing =
-                                handle_error!(self.client.tracker().get(&gvr, namespace, &name));
+                                handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
                             Self::apply_patch(&mut existing, &patch, patch_type)?;
                             let gvk = extract_gvk(&existing)?;
                             handle_error!(self
                                 .client
                                 .tracker()
-                                .update(&gvr, &gvk, existing, namespace, true))
+                                .update(&gvr, &gvk, existing, &namespace, true))
                         }
-                        Err(e) => {
-                            return Self::error_to_response(e);
-                        }
+                        Err(e) => return Self::error_to_response(e),
                     }
                 } else {
-                    // No interceptor - do default patch behavior
                     let mut existing =
-                        handle_error!(self.client.tracker().get(&gvr, namespace, &name));
+                        handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
                     Self::apply_patch(&mut existing, &patch, patch_type)?;
                     let gvk = extract_gvk(&existing)?;
                     handle_error!(self
                         .client
                         .tracker()
-                        .update(&gvr, &gvk, existing, namespace, true))
+                        .update(&gvr, &gvk, existing, &namespace, true))
                 }
             } else if let Some(ref patch_interceptor) = interceptors.patch {
                 let ctx = interceptor::PatchContext {
                     client: &self.client,
                     patch: &patch,
-                    namespace,
+                    namespace: &namespace,
                     name: &name,
                     params: &PatchParams::default(),
                 };
@@ -676,36 +665,34 @@ impl MockService {
                     Ok(Some(result)) => result,
                     Ok(None) => {
                         let mut existing =
-                            handle_error!(self.client.tracker().get(&gvr, namespace, &name));
+                            handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
                         Self::apply_patch(&mut existing, &patch, patch_type)?;
                         let gvk = extract_gvk(&existing)?;
                         handle_error!(self
                             .client
                             .tracker()
-                            .update(&gvr, &gvk, existing, namespace, false))
+                            .update(&gvr, &gvk, existing, &namespace, false))
                     }
-                    Err(e) => {
-                        return Self::error_to_response(e);
-                    }
+                    Err(e) => return Self::error_to_response(e),
                 }
             } else {
-                // No interceptor - do default patch behavior
-                let mut existing = handle_error!(self.client.tracker().get(&gvr, namespace, &name));
+                let mut existing =
+                    handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
                 Self::apply_patch(&mut existing, &patch, patch_type)?;
                 let gvk = extract_gvk(&existing)?;
                 handle_error!(self
                     .client
                     .tracker()
-                    .update(&gvr, &gvk, existing, namespace, false))
+                    .update(&gvr, &gvk, existing, &namespace, false))
             }
         } else {
-            let mut existing = handle_error!(self.client.tracker().get(&gvr, namespace, &name));
+            let mut existing = handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
             Self::apply_patch(&mut existing, &patch, patch_type)?;
             let gvk = extract_gvk(&existing)?;
             handle_error!(self
                 .client
                 .tracker()
-                .update(&gvr, &gvk, existing, namespace, is_status))
+                .update(&gvr, &gvk, existing, &namespace, is_status))
         };
 
         Self::success_response(updated)
@@ -717,9 +704,7 @@ impl MockService {
         query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
-
-        // Convert Option<String> to &str, using empty string for cluster-scoped resources
-        let namespace = parsed.namespace.as_deref().unwrap_or("");
+        let namespace = Self::extract_namespace(&parsed);
 
         let gvr = GVR::new(
             parsed.group.clone().unwrap_or_default(),
@@ -727,81 +712,79 @@ impl MockService {
             parsed.resource.clone(),
         );
 
-        // Check if this is a collection delete (no name) or single object delete
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
+        let gvk = crate::tracker::GVK::new(
+            parsed.group.clone().unwrap_or_default(),
+            parsed.version.clone(),
+            &kind,
+        );
+
+        handle_error!(self.client.validate_verb(&gvk, "delete"));
+
         if let Some(name) = parsed.name {
             // Single object deletion
             let deleted = if let Some(ref interceptors) = self.client.interceptors {
                 if let Some(ref delete_interceptor) = interceptors.delete {
                     let ctx = interceptor::DeleteContext {
                         client: &self.client,
-                        namespace,
+                        namespace: &namespace,
                         name: &name,
                     };
 
                     match delete_interceptor(ctx) {
                         Ok(Some(result)) => result,
                         Ok(None) => {
-                            handle_error!(self.client.tracker().delete(&gvr, namespace, &name))
+                            handle_error!(self.client.tracker().delete(&gvr, &namespace, &name))
                         }
-                        Err(e) => {
-                            return Self::error_to_response(e);
-                        }
+                        Err(e) => return Self::error_to_response(e),
                     }
                 } else {
-                    handle_error!(self.client.tracker().delete(&gvr, namespace, &name))
+                    handle_error!(self.client.tracker().delete(&gvr, &namespace, &name))
                 }
             } else {
-                handle_error!(self.client.tracker().delete(&gvr, namespace, &name))
+                handle_error!(self.client.tracker().delete(&gvr, &namespace, &name))
             };
 
             Self::success_response(deleted)
         } else {
-            // Collection deletion - delete all matching objects
+            // Collection deletion
             let list_params = Self::parse_list_params(query);
-
-            // List all objects matching the selectors
             let mut objects = handle_error!(self
                 .client
                 .tracker()
                 .list(&gvr, parsed.namespace.as_deref()));
 
-            // Apply label selector filtering if specified
+            // Apply selectors
             if let Some(label_selector) = &list_params.label_selector {
                 objects.retain(|obj| Self::matches_label_selector(obj, label_selector));
             }
 
-            // Apply field selector filtering if specified
             if let Some(field_selector) = &list_params.field_selector {
                 objects.retain(|obj| Self::matches_field_selector(obj, field_selector));
             }
 
             // Delete each matching object
-            let mut deleted_count = 0;
-            for obj in &objects {
-                if let Some(obj_name) = obj
-                    .get("metadata")
-                    .and_then(|m| m.get("name"))
-                    .and_then(|n| n.as_str())
-                {
-                    // Delete the object (ignore errors for individual deletions)
-                    if self
-                        .client
+            let deleted_count = objects
+                .iter()
+                .filter_map(Self::extract_object_name)
+                .filter(|obj_name| {
+                    self.client
                         .tracker()
-                        .delete(&gvr, namespace, obj_name)
+                        .delete(&gvr, &namespace, obj_name)
                         .is_ok()
-                    {
-                        deleted_count += 1;
-                    }
-                }
-            }
+                })
+                .count();
 
-            // Return Status response indicating success
             let status_response = serde_json::json!({
                 "kind": "Status",
                 "apiVersion": "v1",
                 "status": "Success",
                 "details": {
-                    "kind": Self::resource_to_kind(&parsed.resource),
+                    "kind": kind,
                     "group": parsed.group.unwrap_or_default(),
                     "deleted": deleted_count
                 }
@@ -815,15 +798,12 @@ impl MockService {
     fn error_to_response(
         err: Error,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
-        // Convert to kube::Error to get proper ErrorResponse
         let kube_err = err.into_kube_err();
 
-        // Extract ErrorResponse from kube::Error::Api
         if let kube::Error::Api(error_response) = kube_err {
             let status_code = StatusCode::from_u16(error_response.code)
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-            // Return Status object matching Kubernetes API format
             let body = serde_json::json!({
                 "kind": "Status",
                 "apiVersion": "v1",
@@ -835,11 +815,10 @@ impl MockService {
 
             Ok(Response::builder()
                 .status(status_code)
-                .header("Content-Type", "application/json")
+                .header("Content-Type", CONTENT_TYPE_JSON)
                 .body(Full::new(Bytes::from(body.to_string())))
-                .unwrap())
+                .expect("Failed to build response"))
         } else {
-            // Fallback for non-Api errors
             Self::error_response(StatusCode::INTERNAL_SERVER_ERROR, &kube_err.to_string())
         }
     }
@@ -858,9 +837,9 @@ impl MockService {
 
         Ok(Response::builder()
             .status(status)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", CONTENT_TYPE_JSON)
             .body(Full::new(Bytes::from(body.to_string())))
-            .unwrap())
+            .expect("Failed to build response"))
     }
 
     fn success_response(
@@ -875,9 +854,9 @@ impl MockService {
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Response::builder()
             .status(status)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", CONTENT_TYPE_JSON)
             .body(Full::new(Bytes::from(data.to_string())))
-            .unwrap())
+            .expect("Failed to build response"))
     }
 }
 
