@@ -48,7 +48,6 @@ pub struct ClientBuilder {
     fixture_dir: Option<PathBuf>,
     interceptors: Option<interceptor::Funcs>,
     registry: ResourceRegistry,
-    validator: Option<Arc<dyn SchemaValidator>>,
     #[cfg(feature = "validation")]
     runtime_validator: Option<Arc<RuntimeOpenAPIValidator>>,
 }
@@ -64,7 +63,6 @@ impl ClientBuilder {
             fixture_dir: None,
             interceptors: None,
             registry: ResourceRegistry::new(),
-            validator: None,
             #[cfg(feature = "validation")]
             runtime_validator: None,
         }
@@ -279,43 +277,6 @@ impl ClientBuilder {
     /// ```
     pub fn with_interceptor_funcs(mut self, interceptors: interceptor::Funcs) -> Self {
         self.interceptors = Some(interceptors);
-        self
-    }
-
-    /// Configure a custom schema validator for runtime validation
-    ///
-    /// By default, the client performs no validation. Use this method to provide
-    /// a custom validator implementation.
-    ///
-    /// The validator will check objects against their schemas on create, update,
-    /// and patch operations.
-    ///
-    /// For OpenAPI-based validation, consider using `with_schema_validation_file()`
-    /// instead, which is available when the `validation` feature is enabled.
-    ///
-    /// # Example with RuntimeOpenAPIValidator
-    ///
-    /// ```rust,no_run,ignore
-    /// use kube_fake_client::{ClientBuilder, validator::RuntimeOpenAPIValidator};
-    /// use std::sync::Arc;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// let validator = RuntimeOpenAPIValidator::from_file("swagger.json")?;
-    /// validator.enable_validation_for("/v1/Pod")?;
-    ///
-    /// let client = ClientBuilder::new()
-    ///     .with_schema_validator(Arc::new(validator))
-    ///     .build()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn with_schema_validator<V>(mut self, validator: V) -> Self
-    where
-        V: SchemaValidator + 'static,
-    {
-        self.validator = Some(Arc::new(validator));
         self
     }
 
@@ -631,19 +592,17 @@ impl ClientBuilder {
     ///
     /// Returns an error if any initial objects fail to be created.
     pub async fn build(self) -> Result<kube::Client> {
-        // Priority for validators:
-        // 1. runtime_validator (if set via with_schema_validation_file, validation feature only)
-        // 2. validator (if set via with_schema_validator)
-        // 3. None (no validation)
+        // Only runtime validation is available (when validation feature is enabled)
         let validator: Option<Arc<dyn SchemaValidator>> = {
             #[cfg(feature = "validation")]
-            if let Some(runtime_val) = self.runtime_validator {
-                Some(runtime_val)
-            } else {
-                self.validator
+            {
+                self.runtime_validator
+                    .map(|v| v as Arc<dyn SchemaValidator>)
             }
             #[cfg(not(feature = "validation"))]
-            self.validator
+            {
+                None
+            }
         };
 
         let fake_client = FakeClient {
