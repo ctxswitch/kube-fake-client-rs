@@ -1,6 +1,6 @@
 [package]
 name = "kube-fake-client"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Rob Lyon <rob@ctxswitch.com>"]
 description = "An implimentation of controller-runtime's fake client for rust"
