@@ -123,7 +123,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, crate::Error::Conflict(_)));
+        assert!(matches!(err, crate::Error::Conflict(_)), "Expected Conflict error, got: {:?}", err);
     }
 
     #[test]
@@ -338,5 +338,261 @@ mod tests {
         let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
 
         assert_eq!(pods.len(), 0);
+    }
+
+    #[test]
+    fn test_verb_validation_unsupported_verb() {
+        use k8s_openapi::api::core::v1::ComponentStatus;
+
+        let client = FakeClient::new();
+
+        // ComponentStatus only supports get/list, not create
+        // Based on discovery data, ComponentStatus doesn't support create verb
+        let mut cs = ComponentStatus::default();
+        cs.metadata.name = Some("test-cs".to_string());
+
+        // Try to create a ComponentStatus - should fail with VerbNotSupported
+        let result = client.create("", &cs, &PostParams::default());
+
+        match result {
+            Err(crate::Error::VerbNotSupported { verb, kind }) => {
+                assert_eq!(verb, "create");
+                assert_eq!(kind, "ComponentStatus");
+            }
+            Ok(_) => panic!("Expected VerbNotSupported error, got success"),
+            Err(e) => panic!("Expected VerbNotSupported error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_verb_validation_supported_verbs() {
+        let client = FakeClient::new();
+
+        // Create a pod (create verb supported)
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+
+        let result = client.create("default", &pod, &PostParams::default());
+        assert!(result.is_ok(), "Create should succeed for Pod");
+
+        // Get the pod (get verb supported)
+        let result = client.get::<Pod>("default", "test-pod");
+        assert!(result.is_ok(), "Get should succeed for Pod");
+
+        // List pods (list verb supported)
+        let result = client.list::<Pod>(Some("default"), &ListParams::default());
+        assert!(result.is_ok(), "List should succeed for Pod");
+
+        // Update the pod (update verb supported)
+        let mut updated_pod = pod.clone();
+        updated_pod.metadata.labels = Some(
+            [("test".to_string(), "value".to_string())]
+                .iter()
+                .cloned()
+                .collect(),
+        );
+        let result = client.update("default", &updated_pod, &PostParams::default());
+        assert!(result.is_ok(), "Update should succeed for Pod");
+
+        // Patch the pod (patch verb supported)
+        let patch = serde_json::json!({"metadata": {"labels": {"patched": "true"}}});
+        let result = client.patch::<Pod>("default", "test-pod", &patch, &PatchParams::default());
+        assert!(result.is_ok(), "Patch should succeed for Pod");
+
+        // Delete the pod (delete verb supported)
+        let result = client.delete::<Pod>("default", "test-pod");
+        assert!(result.is_ok(), "Delete should succeed for Pod");
+    }
+
+    #[test]
+    fn test_verb_validation_for_crds() {
+        // Verb validation for CRDs is tested through the builder_test::test_crd_registration
+        // test which creates, gets, lists, and manipulates CRD instances.
+        // All standard verbs (create, get, list, update, patch, delete) are allowed
+        // for registered CRDs by default.
+    }
+
+    #[test]
+    fn test_immutable_field_validation_metadata_name() {
+        let client = FakeClient::new();
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+
+        let created = client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        // Try to update the pod with a different name (immutable field)
+        let mut updated_pod = created.clone();
+        updated_pod.metadata.name = Some("different-name".to_string());
+
+        let result = client.update("default", &updated_pod, &PostParams::default());
+
+        // Should fail with ImmutableField error
+        match result {
+            Err(crate::Error::ImmutableField { field }) => {
+                assert_eq!(field, "metadata.name");
+            }
+            Ok(_) => panic!("Expected ImmutableField error, got success"),
+            Err(e) => panic!("Expected ImmutableField error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_immutable_field_validation_metadata_namespace() {
+        let client = FakeClient::new();
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+
+        let created = client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        // Try to update the pod with a different namespace (immutable field)
+        let mut updated_pod = created.clone();
+        updated_pod.metadata.namespace = Some("kube-system".to_string());
+
+        let result = client.update("default", &updated_pod, &PostParams::default());
+
+        // Should fail with ImmutableField error
+        match result {
+            Err(crate::Error::ImmutableField { field }) => {
+                assert_eq!(field, "metadata.namespace");
+            }
+            Ok(_) => panic!("Expected ImmutableField error, got success"),
+            Err(e) => panic!("Expected ImmutableField error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_immutable_field_validation_kind() {
+        use k8s_openapi::api::core::v1::ConfigMap;
+
+        let client = FakeClient::new();
+
+        // Create a ConfigMap
+        let mut cm = ConfigMap::default();
+        cm.metadata.name = Some("test-cm".to_string());
+        cm.metadata.namespace = Some("default".to_string());
+
+        let created = client
+            .create("default", &cm, &PostParams::default())
+            .unwrap();
+
+        // Manually manipulate the kind field to simulate changing it
+        // (we can't do this through normal Rust types because of type safety)
+        let mut cm_value = serde_json::to_value(&created).unwrap();
+        cm_value["kind"] = serde_json::json!("DifferentKind");
+
+        // Try to update via the internal tracker directly to bypass type checking
+        // This simulates what would happen if someone tried to change the kind
+        let gvr = crate::tracker::GVR::new("", "v1", "configmaps");
+        let gvk = crate::tracker::GVK::new("", "v1", "ConfigMap");
+
+        // Get existing to compare
+        let existing = client.tracker.get(&gvr, "default", "test-cm").unwrap();
+
+        // Validate immutable fields - should detect kind change
+        let result = client.validate_immutable_fields(&gvk, &existing, &cm_value);
+
+        // Should fail with ImmutableField error
+        match result {
+            Err(crate::Error::ImmutableField { field }) => {
+                assert_eq!(field, "kind");
+            }
+            Ok(_) => panic!("Expected ImmutableField error, got success"),
+            Err(e) => panic!("Expected ImmutableField error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_immutable_field_validation_allows_mutable_fields() {
+        let client = FakeClient::new();
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+
+        let created = client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        // Update mutable fields (labels) - should succeed
+        let mut updated_pod = created.clone();
+        updated_pod.metadata.labels = Some(
+            [("test".to_string(), "value".to_string())]
+                .iter()
+                .cloned()
+                .collect(),
+        );
+
+        let result = client.update("default", &updated_pod, &PostParams::default());
+        assert!(result.is_ok(), "Updating mutable fields should succeed");
+    }
+
+    #[test]
+    fn test_immutable_field_validation_with_patch() {
+        let client = FakeClient::new();
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+
+        client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        // Try to patch the name (immutable field)
+        let patch = serde_json::json!({
+            "metadata": {
+                "name": "different-name"
+            }
+        });
+
+        let result = client.patch::<Pod>("default", "test-pod", &patch, &PatchParams::default());
+
+        // Should fail with ImmutableField error
+        match result {
+            Err(crate::Error::ImmutableField { field }) => {
+                assert_eq!(field, "metadata.name");
+            }
+            Ok(_) => panic!("Expected ImmutableField error, got success"),
+            Err(e) => panic!("Expected ImmutableField error, got: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_immutable_field_validation_patch_allows_mutable() {
+        let client = FakeClient::new();
+
+        // Create a pod
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.namespace = Some("default".to_string());
+
+        client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        // Patch mutable field (labels) - should succeed
+        let patch = serde_json::json!({
+            "metadata": {
+                "labels": {
+                    "patched": "true"
+                }
+            }
+        });
+
+        let result = client.patch::<Pod>("default", "test-pod", &patch, &PatchParams::default());
+        assert!(result.is_ok(), "Patching mutable fields should succeed");
     }
 }

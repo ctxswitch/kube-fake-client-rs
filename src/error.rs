@@ -39,6 +39,22 @@ pub enum Error {
 
     #[error("Index {field} not registered for {kind}")]
     IndexNotFound { kind: String, field: String },
+
+    #[error("Resource type not registered: {group}/{version}/{resource}")]
+    ResourceNotRegistered {
+        group: String,
+        version: String,
+        resource: String,
+    },
+
+    #[error("Verb {verb} not supported for resource {kind}")]
+    VerbNotSupported { verb: String, kind: String },
+
+    #[error("Schema validation failed for {kind}: {errors:?}")]
+    ValidationFailed { kind: String, errors: Vec<String> },
+
+    #[error("Immutable field cannot be changed: {field}")]
+    ImmutableField { field: String },
 }
 
 impl Error {
@@ -102,6 +118,42 @@ impl Error {
                 message: msg.clone(),
                 reason: "InternalError".to_string(),
                 code: 500,
+            },
+            Error::ResourceNotRegistered {
+                group,
+                version: _,
+                resource,
+            } => ErrorResponse {
+                status: "Failure".to_string(),
+                message: format!(
+                    "the server could not find the requested resource ({}{}{})",
+                    if group.is_empty() { "" } else { group },
+                    if group.is_empty() { "" } else { "/" },
+                    resource
+                ),
+                reason: "NotFound".to_string(),
+                code: 404,
+            },
+            Error::VerbNotSupported { verb, kind } => ErrorResponse {
+                status: "Failure".to_string(),
+                message: format!(
+                    "{} \"{}\" is forbidden: verb \"{}\" is not supported",
+                    kind, kind, verb
+                ),
+                reason: "MethodNotAllowed".to_string(),
+                code: 405,
+            },
+            Error::ValidationFailed { kind, errors } => ErrorResponse {
+                status: "Failure".to_string(),
+                message: format!("{} failed schema validation: {}", kind, errors.join(", ")),
+                reason: "Invalid".to_string(),
+                code: 422,
+            },
+            Error::ImmutableField { field } => ErrorResponse {
+                status: "Failure".to_string(),
+                message: format!("field is immutable: {}", field),
+                reason: "Invalid".to_string(),
+                code: 422,
             },
         };
 

@@ -1,17 +1,6 @@
 use crate::{tracker::GVK, Error, Result};
 use serde_json::Value;
 
-pub fn pluralize(kind: &str) -> String {
-    let lower = kind.to_lowercase();
-    if lower.ends_with('s') {
-        format!("{}es", lower)
-    } else if lower.ends_with('y') {
-        format!("{}ies", &lower[..lower.len() - 1])
-    } else {
-        format!("{}s", lower)
-    }
-}
-
 pub fn extract_gvk(value: &Value) -> Result<GVK> {
     let api_version = value
         .get("apiVersion")

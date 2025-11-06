@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::client_utils::{extract_gvk, pluralize};
+    use crate::client_utils::extract_gvk;
     use crate::ClientBuilder;
     use k8s_openapi::api::core::v1::Pod;
     use serde_json::json;
@@ -43,13 +43,6 @@ mod tests {
         assert_eq!(gvk.group, "apps");
         assert_eq!(gvk.version, "v1");
         assert_eq!(gvk.kind, "Deployment");
-    }
-
-    #[test]
-    fn test_pluralize() {
-        assert_eq!(pluralize("Pod"), "pods");
-        assert_eq!(pluralize("Deployment"), "deployments");
-        assert_eq!(pluralize("ReplicaSet"), "replicasets");
     }
 
     #[tokio::test]
@@ -884,4 +877,197 @@ mod tests {
             Err(e) => panic!("Expected Api error, got: {:?}", e),
         }
     }
+
+    /// Test CRD registration - CRDs must be registered before use
+    #[tokio::test]
+    async fn test_crd_registration() {
+        use kube::CustomResource;
+        use schemars::JsonSchema;
+        use serde::{Deserialize, Serialize};
+
+        // Define a custom resource
+        #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        #[kube(
+            group = "example.com",
+            version = "v1",
+            kind = "MyApp",
+            plural = "myapps",
+            namespaced
+        )]
+        struct MyAppSpec {
+            replicas: i32,
+            image: String,
+        }
+
+        // Register the CRD with the client
+        let client = ClientBuilder::new()
+            .with_resource::<MyApp>()
+            .build()
+            .await
+            .unwrap();
+
+        let myapps: kube::Api<MyApp> = kube::Api::namespaced(client, "default");
+
+        // Create a custom resource instance
+        let mut my_app = MyApp::new(
+            "test-app",
+            MyAppSpec {
+                replicas: 3,
+                image: "nginx:latest".to_string(),
+            },
+        );
+        my_app.metadata.namespace = Some("default".to_string());
+
+        // Create the CRD instance
+        let created = myapps
+            .create(&kube::api::PostParams::default(), &my_app)
+            .await
+            .unwrap();
+
+        assert_eq!(created.metadata.name, Some("test-app".to_string()));
+        assert_eq!(created.spec.replicas, 3);
+        assert_eq!(created.spec.image, "nginx:latest");
+
+        // Get the CRD instance
+        let retrieved = myapps.get("test-app").await.unwrap();
+        assert_eq!(retrieved.metadata.name, Some("test-app".to_string()));
+        assert_eq!(retrieved.spec.replicas, 3);
+
+        // List CRD instances
+        let list = myapps
+            .list(&kube::api::ListParams::default())
+            .await
+            .unwrap();
+        assert_eq!(list.items.len(), 1);
+        assert_eq!(list.items[0].metadata.name, Some("test-app".to_string()));
+    }
+
+    /// Test that unregistered CRDs fail with proper error
+    #[tokio::test]
+    async fn test_unregistered_crd_fails() {
+        use kube::CustomResource;
+        use schemars::JsonSchema;
+        use serde::{Deserialize, Serialize};
+
+        // Define a custom resource
+        #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        #[kube(
+            group = "example.com",
+            version = "v1",
+            kind = "UnregisteredApp",
+            plural = "unregisteredapps",
+            namespaced
+        )]
+        struct UnregisteredAppSpec {
+            name: String,
+        }
+
+        // Create a client WITHOUT registering the CRD
+        let client = ClientBuilder::new().build().await.unwrap();
+
+        let unregistered_apps: kube::Api<UnregisteredApp> =
+            kube::Api::namespaced(client, "default");
+
+        // Try to create an instance of the unregistered CRD
+        let mut app = UnregisteredApp::new(
+            "test-app",
+            UnregisteredAppSpec {
+                name: "test".to_string(),
+            },
+        );
+        app.metadata.namespace = Some("default".to_string());
+
+        // Should fail with ResourceNotRegistered error (404)
+        match unregistered_apps
+            .create(&kube::api::PostParams::default(), &app)
+            .await
+        {
+            Ok(_) => panic!("Expected ResourceNotRegistered error"),
+            Err(kube::Error::Api(ae)) => {
+                assert_eq!(ae.code, 404, "Unregistered resource should return 404");
+                assert_eq!(ae.reason, "NotFound");
+                assert!(
+                    ae.message.contains("could not find the requested resource"),
+                    "Error message should indicate resource not found: {}",
+                    ae.message
+                );
+            }
+            Err(e) => panic!("Expected Api error, got: {:?}", e),
+        }
+    }
+
+    /// Test that multiple CRDs can be registered
+    #[tokio::test]
+    async fn test_multiple_crd_registration() {
+        use kube::CustomResource;
+        use schemars::JsonSchema;
+        use serde::{Deserialize, Serialize};
+
+        // Define two different CRDs
+        #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        #[kube(
+            group = "example.com",
+            version = "v1",
+            kind = "Database",
+            plural = "databases",
+            namespaced
+        )]
+        struct DatabaseSpec {
+            engine: String,
+            size: String,
+        }
+
+        #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        #[kube(
+            group = "example.com",
+            version = "v1",
+            kind = "Cache",
+            plural = "caches",
+            namespaced
+        )]
+        struct CacheSpec {
+            memory: String,
+            ttl: i32,
+        }
+
+        // Register both CRDs
+        let client = ClientBuilder::new()
+            .with_resource::<Database>()
+            .with_resource::<Cache>()
+            .build()
+            .await
+            .unwrap();
+
+        // Create instances of both CRDs
+        let databases: kube::Api<Database> = kube::Api::namespaced(client.clone(), "default");
+        let mut db = Database::new(
+            "postgres-db",
+            DatabaseSpec {
+                engine: "postgres".to_string(),
+                size: "10GB".to_string(),
+            },
+        );
+        db.metadata.namespace = Some("default".to_string());
+        let created_db = databases
+            .create(&kube::api::PostParams::default(), &db)
+            .await
+            .unwrap();
+        assert_eq!(created_db.metadata.name, Some("postgres-db".to_string()));
+
+        let caches: kube::Api<Cache> = kube::Api::namespaced(client, "default");
+        let mut cache = Cache::new(
+            "redis-cache",
+            CacheSpec {
+                memory: "1GB".to_string(),
+                ttl: 3600,
+            },
+        );
+        cache.metadata.namespace = Some("default".to_string());
+        let created_cache = caches
+            .create(&kube::api::PostParams::default(), &cache)
+            .await
+            .unwrap();
+        assert_eq!(created_cache.metadata.name, Some("redis-cache".to_string()));
+    }
+
 }

@@ -34,7 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     app2.metadata.namespace = Some("default".to_string());
 
+    // Register the custom resource type (like installing a CRD in a real cluster)
     let client = ClientBuilder::new()
+        .with_resource::<MyApp>()
         .with_object(app1)
         .with_object(app2)
         .build()
@@ -89,7 +91,12 @@ mod tests {
         );
         app.metadata.namespace = Some("default".to_string());
 
-        let client = ClientBuilder::new().with_object(app).build().await.unwrap();
+        let client = ClientBuilder::new()
+            .with_resource::<MyApp>()
+            .with_object(app)
+            .build()
+            .await
+            .unwrap();
 
         let api: Api<MyApp> = Api::namespaced(client, "default");
 

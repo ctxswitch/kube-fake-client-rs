@@ -2,6 +2,7 @@
 
 use crate::client::FakeClient;
 use crate::client_utils::extract_gvk;
+use crate::discovery::Discovery;
 use crate::error::Error;
 use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
@@ -126,21 +127,23 @@ impl MockService {
         }
     }
 
-    /// Convert resource plural to singular kind (simplified)
-    fn resource_to_kind(resource: &str) -> String {
-        // Simple heuristic: remove trailing 's'
-        if let Some(base) = resource.strip_suffix("ies") {
-            format!("{}y", base)
-        } else if resource.ends_with("ses")
-            || resource.ends_with("xes")
-            || resource.ends_with("zes")
-        {
-            resource[..resource.len() - 2].to_string()
-        } else if let Some(base) = resource.strip_suffix('s') {
-            base.to_string()
-        } else {
-            resource.to_string()
-        }
+    /// Convert resource plural to Kind using discovery + registry
+    ///
+    /// Returns an error if the resource is not found in either built-in discovery or the registry.
+    /// This ensures that CRDs must be explicitly registered before use.
+    fn resource_to_kind(
+        &self,
+        group: &str,
+        version: &str,
+        resource: &str,
+    ) -> Result<String, Error> {
+        Discovery::plural_to_kind_with_registry(group, version, resource, &self.client.registry)
+            .map(|k| k.into_owned())
+            .ok_or_else(|| Error::ResourceNotRegistered {
+                group: group.to_string(),
+                version: version.to_string(),
+                resource: resource.to_string(),
+            })
     }
 
     /// Parse query parameters from URL and create ListParams
@@ -316,7 +319,21 @@ impl MockService {
         // Convert Option<String> to &str, using empty string for cluster-scoped resources
         let namespace = parsed.namespace.as_deref().unwrap_or("");
 
+        // Determine the kind and validate verb
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
+
         if let Some(name) = parsed.name {
+            // GET single object - validate "get" verb
+            let gvk = crate::tracker::GVK::new(
+                parsed.group.clone().unwrap_or_default(),
+                parsed.version.clone(),
+                &kind,
+            );
+            handle_error!(self.client.validate_verb(&gvk, "get"));
             let is_status = path.ends_with("/status");
 
             let obj = if let Some(ref interceptors) = self.client.interceptors {
@@ -371,7 +388,14 @@ impl MockService {
 
             Self::success_response(obj)
         } else {
-            let kind = Self::resource_to_kind(&parsed.resource);
+            // LIST - validate "list" verb
+            let gvk = crate::tracker::GVK::new(
+                parsed.group.clone().unwrap_or_default(),
+                parsed.version.clone(),
+                &kind,
+            );
+            handle_error!(self.client.validate_verb(&gvk, "list"));
+
             let list_params = Self::parse_list_params(query);
 
             let mut objects = if let Some(ref interceptors) = self.client.interceptors {
@@ -453,7 +477,11 @@ impl MockService {
         let mut obj: Value = serde_json::from_slice(&body)?;
 
         // Ensure apiVersion and kind are set
-        let kind = Self::resource_to_kind(&parsed.resource);
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
         let api_version = if let Some(ref g) = parsed.group {
             format!("{}/{}", g, parsed.version)
         } else {
@@ -473,6 +501,9 @@ impl MockService {
             parsed.resource,
         );
         let gvk = extract_gvk(&obj)?;
+
+        // Validate "create" verb
+        handle_error!(self.client.validate_verb(&gvk, "create"));
 
         let created = if let Some(ref interceptors) = self.client.interceptors {
             if let Some(ref create_interceptor) = interceptors.create {
@@ -515,7 +546,11 @@ impl MockService {
         let name = parsed.name.as_ref().ok_or("Name required for PUT")?;
         let mut obj: Value = serde_json::from_slice(&body)?;
 
-        let kind = Self::resource_to_kind(&parsed.resource);
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
         let api_version = if let Some(ref g) = parsed.group {
             format!("{}/{}", g, parsed.version)
         } else {
@@ -535,6 +570,9 @@ impl MockService {
             parsed.resource,
         );
         let gvk = extract_gvk(&obj)?;
+
+        // Validate "update" verb
+        handle_error!(self.client.validate_verb(&gvk, "update"));
 
         let is_status = path.ends_with("/status");
 
@@ -618,10 +656,19 @@ impl MockService {
         let patch_type = Self::determine_patch_type(content_type);
 
         let gvr = GVR::new(
-            parsed.group.unwrap_or_default(),
-            parsed.version,
-            parsed.resource,
+            parsed.group.clone().unwrap_or_default(),
+            parsed.version.clone(),
+            parsed.resource.clone(),
         );
+
+        // Determine kind and validate "patch" verb
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
+        let gvk = crate::tracker::GVK::new(parsed.group.unwrap_or_default(), parsed.version, &kind);
+        handle_error!(self.client.validate_verb(&gvk, "patch"));
 
         let is_status = path.ends_with("/status");
 
@@ -727,6 +774,19 @@ impl MockService {
             parsed.resource.clone(),
         );
 
+        // Determine kind and validate "delete" verb
+        let kind = handle_error!(self.resource_to_kind(
+            &parsed.group.clone().unwrap_or_default(),
+            &parsed.version,
+            &parsed.resource
+        ));
+        let gvk = crate::tracker::GVK::new(
+            parsed.group.clone().unwrap_or_default(),
+            parsed.version.clone(),
+            &kind,
+        );
+        handle_error!(self.client.validate_verb(&gvk, "delete"));
+
         // Check if this is a collection delete (no name) or single object delete
         if let Some(name) = parsed.name {
             // Single object deletion
@@ -796,12 +856,17 @@ impl MockService {
             }
 
             // Return Status response indicating success
+            let kind = handle_error!(self.resource_to_kind(
+                &parsed.group.clone().unwrap_or_default(),
+                &parsed.version,
+                &parsed.resource
+            ));
             let status_response = serde_json::json!({
                 "kind": "Status",
                 "apiVersion": "v1",
                 "status": "Success",
                 "details": {
-                    "kind": Self::resource_to_kind(&parsed.resource),
+                    "kind": kind,
                     "group": parsed.group.unwrap_or_default(),
                     "deleted": deleted_count
                 }

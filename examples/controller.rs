@@ -102,7 +102,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kube::api::PostParams;
 
     #[tokio::test]
     async fn test_controller_adds_label() {

@@ -147,6 +147,14 @@ impl ObjectTracker {
         ns_objects.insert(name.clone(), stored);
 
         debug!("Added object: {}/{}", namespace, name);
+
+        // Auto-register status subresource if the object has a status field
+        if object.get("status").is_some() {
+            drop(objects); // Release the write lock before acquiring another lock
+            self.add_status_subresource(gvk.clone());
+            debug!("Auto-registered status subresource for GVK: {:?}", gvk);
+        }
+
         Ok(object)
     }
 
@@ -205,6 +213,14 @@ impl ObjectTracker {
         ns_objects.insert(name.clone(), stored);
 
         debug!("Created object: {}/{}", namespace, name);
+
+        // Auto-register status subresource if the object has a status field
+        if object.get("status").is_some() {
+            drop(objects); // Release the write lock before acquiring another lock
+            self.add_status_subresource(gvk.clone());
+            debug!("Auto-registered status subresource for GVK: {:?}", gvk);
+        }
+
         Ok(object)
     }
 

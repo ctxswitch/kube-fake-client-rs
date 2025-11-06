@@ -1,9 +1,14 @@
 //! Builder for constructing fake clients with various options
 
 use crate::client::{FakeClient, IndexerFunc};
-use crate::client_utils::{extract_gvk, pluralize};
+use crate::client_utils::extract_gvk;
+use crate::discovery::Discovery;
 use crate::interceptor;
+use crate::registry::ResourceRegistry;
 use crate::tracker::{GVK, GVR};
+use crate::validator::SchemaValidator;
+#[cfg(feature = "validation")]
+use crate::validator::RuntimeOpenAPIValidator;
 use crate::{Error, Result};
 use kube::Resource;
 use serde::Serialize;
@@ -42,6 +47,10 @@ pub struct ClientBuilder {
     return_managed_fields: bool,
     fixture_dir: Option<PathBuf>,
     interceptors: Option<interceptor::Funcs>,
+    registry: ResourceRegistry,
+    validator: Option<Arc<dyn SchemaValidator>>,
+    #[cfg(feature = "validation")]
+    runtime_validator: Option<Arc<RuntimeOpenAPIValidator>>,
 }
 
 impl ClientBuilder {
@@ -54,6 +63,10 @@ impl ClientBuilder {
             return_managed_fields: false,
             fixture_dir: None,
             interceptors: None,
+            registry: ResourceRegistry::new(),
+            validator: None,
+            #[cfg(feature = "validation")]
+            runtime_validator: None,
         }
     }
 
@@ -105,6 +118,41 @@ impl ClientBuilder {
     /// Add initial objects from JSON values
     pub fn with_runtime_objects(mut self, objects: Vec<Value>) -> Self {
         self.initial_objects.extend(objects);
+        self
+    }
+
+    /// Register a custom resource type for discovery
+    ///
+    /// Custom resources (CRDs) must be explicitly registered.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use kube_fake_client::ClientBuilder;
+    /// use kube::CustomResource;
+    /// use schemars::JsonSchema;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+    /// #[kube(group = "example.com", version = "v1", kind = "MyApp", plural = "myapps", namespaced)]
+    /// struct MyAppSpec {
+    ///     replicas: i32,
+    /// }
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new()
+    ///     .with_resource::<MyApp>()
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_resource<K>(mut self) -> Self
+    where
+        K: Resource<DynamicType = ()>,
+    {
+        self.registry.register::<K>();
         self
     }
 
@@ -229,6 +277,138 @@ impl ClientBuilder {
     pub fn with_interceptor_funcs(mut self, interceptors: interceptor::Funcs) -> Self {
         self.interceptors = Some(interceptors);
         self
+    }
+
+    /// Configure a custom schema validator for runtime validation
+    ///
+    /// By default, the client performs no validation. Use this method to provide
+    /// a custom validator implementation.
+    ///
+    /// The validator will check objects against their schemas on create, update,
+    /// and patch operations.
+    ///
+    /// For OpenAPI-based validation, consider using `with_schema_validation_file()`
+    /// instead, which is available when the `validation` feature is enabled.
+    ///
+    /// # Example with RuntimeOpenAPIValidator
+    ///
+    /// ```rust,no_run,ignore
+    /// use kube_fake_client::{ClientBuilder, validator::RuntimeOpenAPIValidator};
+    /// use std::sync::Arc;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let validator = RuntimeOpenAPIValidator::from_file("swagger.json")?;
+    /// validator.enable_validation_for("/v1/Pod")?;
+    ///
+    /// let client = ClientBuilder::new()
+    ///     .with_schema_validator(Arc::new(validator))
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_schema_validator<V>(mut self, validator: V) -> Self
+    where
+        V: SchemaValidator + 'static,
+    {
+        self.validator = Some(Arc::new(validator));
+        self
+    }
+
+    /// Configure runtime schema validation from an OpenAPI spec file
+    ///
+    /// **Note:** This method is only available when the `validation` feature is enabled.
+    #[cfg(feature = "validation")]
+    ///
+    /// This method loads an OpenAPI spec file and prepares it for selective validation.
+    /// After calling this method, use `with_validation_for()` to enable validation
+    /// for specific resources.
+    ///
+    /// This approach allows you to:
+    /// - Use any OpenAPI file (Kubernetes swagger.json or CRD-generated schemas)
+    /// - Explicitly choose which resources to validate
+    /// - Support both built-in resources and custom resources
+    ///
+    /// # Arguments
+    /// * `openapi_file` - Path to OpenAPI v2 (Swagger) JSON file
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use kube_fake_client::ClientBuilder;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new()
+    ///     .with_schema_validation_file("swagger.json")?
+    ///     .with_validation_for("/v1/Pod")?
+    ///     .with_validation_for("apps/v1/Deployment")?
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the OpenAPI file cannot be read or parsed.
+    pub fn with_schema_validation_file(mut self, openapi_file: impl AsRef<Path>) -> Result<Self> {
+        let validator = RuntimeOpenAPIValidator::from_file(openapi_file)?;
+        self.runtime_validator = Some(Arc::new(validator));
+        Ok(self)
+    }
+
+    /// Enable validation for a specific resource type
+    ///
+    /// **Note:** This method is only available when the `validation` feature is enabled.
+    #[cfg(feature = "validation")]
+    ///
+    /// Must be called after `with_schema_validation_file()`. Each call enables
+    /// validation for one GVK (group/version/kind).
+    ///
+    /// # Arguments
+    /// * `gvk` - GVK in format "group/version/Kind"
+    ///   - Core resources: "/v1/Pod", "/v1/ConfigMap"
+    ///   - Other built-in: "apps/v1/Deployment", "batch/v1/Job"
+    ///   - CRDs: "example.com/v1/MyResource"
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use kube_fake_client::ClientBuilder;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new()
+    ///     .with_schema_validation_file("swagger.json")?
+    ///     .with_validation_for("/v1/Pod")?
+    ///     .with_validation_for("/v1/Service")?
+    ///     .with_validation_for("apps/v1/Deployment")?
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - `with_schema_validation_file()` was not called first
+    /// - The GVK format is invalid
+    /// - No OpenAPI definition exists for the GVK
+    pub fn with_validation_for(self, gvk: &str) -> Result<Self> {
+        let validator = self
+            .runtime_validator
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Internal(
+                    "Call with_schema_validation_file() before with_validation_for()".to_string(),
+                )
+            })?;
+
+        validator.enable_validation_for(gvk)?;
+        Ok(self)
     }
 
     /// Set the fixture directory for loading YAML fixtures
@@ -451,11 +631,28 @@ impl ClientBuilder {
     ///
     /// Returns an error if any initial objects fail to be created.
     pub async fn build(self) -> Result<kube::Client> {
+        // Priority for validators:
+        // 1. runtime_validator (if set via with_schema_validation_file, validation feature only)
+        // 2. validator (if set via with_schema_validator)
+        // 3. None (no validation)
+        let validator: Option<Arc<dyn SchemaValidator>> = {
+            #[cfg(feature = "validation")]
+            if let Some(runtime_val) = self.runtime_validator {
+                Some(runtime_val)
+            } else {
+                self.validator
+            }
+            #[cfg(not(feature = "validation"))]
+            self.validator
+        };
+
         let fake_client = FakeClient {
             tracker: Arc::new(crate::tracker::ObjectTracker::new()),
             indexes: Arc::new(std::sync::RwLock::new(self.indexes)),
             return_managed_fields: self.return_managed_fields,
             interceptors: self.interceptors.map(Arc::new),
+            registry: Arc::new(self.registry),
+            validator,
         };
 
         // Enable status subresources
@@ -467,7 +664,7 @@ impl ClientBuilder {
         // This sets ResourceVersion to "999" instead of "1"
         for obj in self.initial_objects {
             let gvk = extract_gvk(&obj)?;
-            let gvr = gvk_to_gvr(&gvk)?;
+            let gvr = gvk_to_gvr(&gvk, &fake_client.registry)?;
             let namespace = extract_namespace(&obj);
 
             fake_client
@@ -493,12 +690,14 @@ impl Default for ClientBuilder {
     }
 }
 
-/// Convert GVK to GVR (simplified - pluralizes kind)
-fn gvk_to_gvr(gvk: &GVK) -> Result<GVR> {
-    // Simple pluralization - in a real implementation, this would use
-    // a REST mapper or API discovery
-    let resource = pluralize(&gvk.kind);
-    Ok(GVR::new(gvk.group.clone(), gvk.version.clone(), resource))
+/// Convert GVK to GVR using Discovery + Registry
+fn gvk_to_gvr(gvk: &GVK, registry: &ResourceRegistry) -> Result<GVR> {
+    // Use Discovery which checks static data first, then checks the registry
+    Discovery::gvk_to_gvr_with_registry(gvk, registry).ok_or_else(|| Error::ResourceNotRegistered {
+        group: gvk.group.clone(),
+        version: gvk.version.clone(),
+        resource: format!("{} (kind)", gvk.kind),
+    })
 }
 
 /// Extract namespace from object metadata

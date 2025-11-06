@@ -375,4 +375,102 @@ mod tests {
             rv1
         );
     }
+
+    #[test]
+    fn test_auto_register_status_subresource_on_create() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+
+        // Initially no status subresource registered
+        assert!(!tracker.has_status_subresource(&gvk));
+
+        // Create a Pod with a status field
+        let mut obj = create_test_object("test-pod", "default");
+        obj["status"] = json!({"phase": "Pending"});
+
+        tracker.create(&gvr, &gvk, obj, "default").unwrap();
+
+        // Status subresource should be automatically registered
+        assert!(tracker.has_status_subresource(&gvk));
+    }
+
+    #[test]
+    fn test_auto_register_status_subresource_on_add() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+
+        // Initially no status subresource registered
+        assert!(!tracker.has_status_subresource(&gvk));
+
+        // Add a Pod with a status field
+        let mut obj = create_test_object("test-pod", "default");
+        obj["status"] = json!({"phase": "Running"});
+
+        tracker.add(&gvr, &gvk, obj, "default").unwrap();
+
+        // Status subresource should be automatically registered
+        assert!(tracker.has_status_subresource(&gvk));
+    }
+
+    #[test]
+    fn test_no_auto_register_without_status_field() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "configmaps");
+        let gvk = GVK::new("", "v1", "ConfigMap");
+
+        // Initially no status subresource registered
+        assert!(!tracker.has_status_subresource(&gvk));
+
+        // Create a ConfigMap without a status field
+        let obj = json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "test-cm",
+                "namespace": "default",
+            },
+            "data": {
+                "key": "value"
+            }
+        });
+
+        tracker.create(&gvr, &gvk, obj, "default").unwrap();
+
+        // Status subresource should NOT be registered
+        assert!(!tracker.has_status_subresource(&gvk));
+    }
+
+    #[test]
+    fn test_status_subresource_prevents_status_modification_on_regular_update() {
+        let tracker = ObjectTracker::new();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+
+        // Create a Pod with status - this auto-registers status subresource
+        let mut obj = create_test_object("test-pod", "default");
+        obj["status"] = json!({"phase": "Pending"});
+
+        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(created["status"]["phase"], "Pending");
+
+        // Verify status subresource was auto-registered
+        assert!(tracker.has_status_subresource(&gvk));
+
+        // Try to update spec AND status in a regular update
+        let mut updated_obj = create_test_object("test-pod", "default");
+        updated_obj["metadata"]["resourceVersion"] = json!("1");
+        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:latest");
+        updated_obj["status"] = json!({"phase": "Running"}); // Try to change status
+
+        let updated = tracker
+            .update(&gvr, &gvk, updated_obj, "default", false)
+            .unwrap();
+
+        // Spec should be updated
+        assert_eq!(updated["spec"]["containers"][0]["image"], "nginx:latest");
+        // Status should NOT be updated (preserved from original)
+        assert_eq!(updated["status"]["phase"], "Pending");
+    }
 }
