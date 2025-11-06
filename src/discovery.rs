@@ -107,7 +107,7 @@ impl Discovery {
         // Check registry for registered CRDs
         registry
             .plural_to_kind(group, version, plural)
-            .map(|s| Cow::Owned(s.to_string()))
+            .map(Cow::Owned)
     }
 
     /// Convert GVR to GVK using discovery data

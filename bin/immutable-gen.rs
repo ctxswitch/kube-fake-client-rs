@@ -57,9 +57,9 @@ struct Args {
 /// Immutable field information for a resource type
 #[derive(Debug, Serialize)]
 struct ImmutableFieldInfo {
-    group: String,      // e.g., "batch" or "" for core
-    version: String,    // e.g., "v1"
-    kind: String,       // e.g., "JobSpec" or "ObjectMeta"
+    group: String,       // e.g., "batch" or "" for core
+    version: String,     // e.g., "v1"
+    kind: String,        // e.g., "JobSpec" or "ObjectMeta"
     fields: Vec<String>, // e.g., ["nodeName", "serviceAccountName"]
 }
 
@@ -157,14 +157,21 @@ fn parse_definition_name(def_name: &str) -> Result<(String, String, String), Str
             Ok(("".to_string(), parts[1].to_string(), parts[2].to_string()))
         } else {
             // Non-core: group is first part
-            Ok((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))
+            Ok((
+                parts[0].to_string(),
+                parts[1].to_string(),
+                parts[2].to_string(),
+            ))
         }
     } else if let Some(rest) = def_name.strip_prefix("io.k8s.apimachinery.pkg.apis.meta.") {
         // apimachinery types: io.k8s.apimachinery.pkg.apis.meta.{version}.{Kind}
         // Treat these as core (empty group) since they're fundamental types
         let parts: Vec<&str> = rest.split('.').collect();
         if parts.len() < 2 {
-            return Err(format!("Invalid apimachinery definition name: {}", def_name));
+            return Err(format!(
+                "Invalid apimachinery definition name: {}",
+                def_name
+            ));
         }
         Ok(("".to_string(), parts[0].to_string(), parts[1].to_string()))
     } else {

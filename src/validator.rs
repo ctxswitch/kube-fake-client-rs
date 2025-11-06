@@ -1,6 +1,6 @@
-use crate::error::Result;
 #[cfg(feature = "validation")]
 use crate::error::Error;
+use crate::error::Result;
 use serde_json::Value;
 
 /// Trait for schema validation implementations
@@ -11,7 +11,6 @@ pub trait SchemaValidator: Send + Sync {
     /// For core resources, group is an empty string.
     fn validate(&self, group: &str, version: &str, kind: &str, value: &Value) -> Result<()>;
 }
-
 
 #[cfg(feature = "validation")]
 mod runtime_openapi_validator {
@@ -47,9 +46,8 @@ mod runtime_openapi_validator {
                 ))
             })?;
 
-            let spec: Value = serde_json::from_str(&content).map_err(|e| {
-                Error::Internal(format!("Failed to parse OpenAPI JSON: {}", e))
-            })?;
+            let spec: Value = serde_json::from_str(&content)
+                .map_err(|e| Error::Internal(format!("Failed to parse OpenAPI JSON: {}", e)))?;
 
             let definitions = spec
                 .get("definitions")
@@ -142,10 +140,7 @@ mod runtime_openapi_validator {
             });
 
             let compiled = JSONSchema::compile(&schema).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to compile schema for '{}': {}",
-                    gvk_key, e
-                ))
+                Error::Internal(format!("Failed to compile schema for '{}': {}", gvk_key, e))
             })?;
 
             self.schemas
@@ -211,4 +206,3 @@ impl SchemaValidator for std::sync::Arc<RuntimeOpenAPIValidator> {
         (**self).validate(group, version, kind, value)
     }
 }
-

@@ -44,6 +44,8 @@ mod builder_test;
 #[cfg(test)]
 mod client_test;
 #[cfg(test)]
+mod label_selector_test;
+#[cfg(test)]
 mod mock_service_test;
 #[cfg(test)]
 mod tracker_test;

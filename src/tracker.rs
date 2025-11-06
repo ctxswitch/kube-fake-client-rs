@@ -94,66 +94,89 @@ impl ObjectTracker {
     }
 
     pub fn add_status_subresource(&self, gvk: GVK) {
-        let mut subresources = self.with_status_subresource.write().unwrap();
-        subresources.insert(gvk);
+        self.with_status_subresource
+            .write()
+            .expect("lock poisoned")
+            .insert(gvk);
     }
 
     pub fn has_status_subresource(&self, gvk: &GVK) -> bool {
-        let subresources = self.with_status_subresource.read().unwrap();
-        subresources.contains(gvk)
+        self.with_status_subresource
+            .read()
+            .expect("lock poisoned")
+            .contains(gvk)
+    }
+
+    /// Auto-register status subresource if object has a status field
+    fn maybe_register_status_subresource(&self, gvk: &GVK, object: &Value) {
+        if object.get("status").is_some() {
+            self.add_status_subresource(gvk.clone());
+            debug!("Auto-registered status subresource for GVK: {:?}", gvk);
+        }
+    }
+
+    /// Store object in tracker storage
+    fn store_object(
+        &self,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+        stored: StoredObject,
+    ) -> Result<()> {
+        let mut objects = self.objects.write().expect("lock poisoned");
+        objects
+            .entry(gvr.clone())
+            .or_default()
+            .entry(namespace.to_string())
+            .or_default()
+            .insert(name.to_string(), stored);
+        Ok(())
+    }
+
+    /// Extract object name from metadata
+    fn extract_name(meta: &ObjectMeta) -> Result<String> {
+        meta.name
+            .clone()
+            .ok_or_else(|| Error::InvalidRequest("Object name is required".to_string()))
     }
 
     pub fn add(&self, gvr: &GVR, gvk: &GVK, mut object: Value, namespace: &str) -> Result<Value> {
         trace!("Adding object: {:?} in namespace: {}", gvr, namespace);
 
         let mut meta = self.extract_metadata(&object)?;
+        let name = Self::extract_name(&meta)?;
 
-        let name = meta
-            .name
-            .clone()
-            .ok_or_else(|| Error::InvalidRequest("Object name is required".to_string()))?;
-
+        // Validate deletion timestamp without finalizers
         if meta.deletion_timestamp.is_some()
             && meta.finalizers.as_ref().is_none_or(|f| f.is_empty())
         {
             return Err(Error::InvalidRequest(format!(
-                "refusing to add object {} with metadata.deletionTimestamp but no finalizers",
-                name
+                "refusing to add object {name} with metadata.deletionTimestamp but no finalizers"
             )));
         }
 
-        if meta.resource_version.is_none()
-            || meta
-                .resource_version
-                .as_ref()
-                .is_none_or(|rv| rv.is_empty())
+        // Set resource version if not present or empty
+        if meta
+            .resource_version
+            .as_ref()
+            .is_none_or(|rv| rv.is_empty())
         {
             meta.resource_version = Some(self.next_resource_version());
         }
 
         ensure_metadata(&mut meta, namespace);
-
         object["metadata"] = serde_json::to_value(&meta)?;
 
         let stored = StoredObject {
             data: object.clone(),
             gvk: gvk.clone(),
-            metadata: meta.clone(),
+            metadata: meta,
         };
 
-        let mut objects = self.objects.write().unwrap();
-        let gvr_objects = objects.entry(gvr.clone()).or_default();
-        let ns_objects = gvr_objects.entry(namespace.to_string()).or_default();
-        ns_objects.insert(name.clone(), stored);
-
+        self.store_object(gvr, namespace, &name, stored)?;
         debug!("Added object: {}/{}", namespace, name);
 
-        // Auto-register status subresource if the object has a status field
-        if object.get("status").is_some() {
-            drop(objects); // Release the write lock before acquiring another lock
-            self.add_status_subresource(gvk.clone());
-            debug!("Auto-registered status subresource for GVK: {:?}", gvk);
-        }
+        self.maybe_register_status_subresource(gvk, &object);
 
         Ok(object)
     }
@@ -168,12 +191,9 @@ impl ObjectTracker {
         trace!("Creating object: {:?} in namespace: {}", gvr, namespace);
 
         let mut meta = self.extract_metadata(&object)?;
+        let name = Self::extract_name(&meta)?;
 
-        let name = meta
-            .name
-            .clone()
-            .ok_or_else(|| Error::InvalidRequest("Object name is required".to_string()))?;
-
+        // Validate resource version not set for create
         if meta
             .resource_version
             .as_ref()
@@ -184,6 +204,7 @@ impl ObjectTracker {
             ));
         }
 
+        // Check if object already exists
         if self.get(gvr, namespace, &name).is_ok() {
             return Err(Error::AlreadyExists {
                 kind: gvr.resource.clone(),
@@ -195,6 +216,7 @@ impl ObjectTracker {
         meta.resource_version = Some(self.next_resource_version());
         ensure_metadata(&mut meta, namespace);
 
+        // Clear deletion timestamp if present
         if meta.deletion_timestamp.is_some() {
             meta.deletion_timestamp = None;
         }
@@ -204,22 +226,13 @@ impl ObjectTracker {
         let stored = StoredObject {
             data: object.clone(),
             gvk: gvk.clone(),
-            metadata: meta.clone(),
+            metadata: meta,
         };
 
-        let mut objects = self.objects.write().unwrap();
-        let gvr_objects = objects.entry(gvr.clone()).or_default();
-        let ns_objects = gvr_objects.entry(namespace.to_string()).or_default();
-        ns_objects.insert(name.clone(), stored);
-
+        self.store_object(gvr, namespace, &name, stored)?;
         debug!("Created object: {}/{}", namespace, name);
 
-        // Auto-register status subresource if the object has a status field
-        if object.get("status").is_some() {
-            drop(objects); // Release the write lock before acquiring another lock
-            self.add_status_subresource(gvk.clone());
-            debug!("Auto-registered status subresource for GVK: {:?}", gvk);
-        }
+        self.maybe_register_status_subresource(gvk, &object);
 
         Ok(object)
     }
@@ -227,20 +240,14 @@ impl ObjectTracker {
     pub fn get(&self, gvr: &GVR, namespace: &str, name: &str) -> Result<Value> {
         trace!("Getting object: {:?} {}/{}", gvr, namespace, name);
 
-        let objects = self.objects.read().unwrap();
-        let gvr_objects = objects
+        let objects = self.objects.read().expect("lock poisoned");
+
+        objects
             .get(gvr)
-            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
-
-        let ns_objects = gvr_objects
-            .get(namespace)
-            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
-
-        let stored = ns_objects
-            .get(name)
-            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
-
-        Ok(stored.data.clone())
+            .and_then(|gvr_objects| gvr_objects.get(namespace))
+            .and_then(|ns_objects| ns_objects.get(name))
+            .map(|stored| stored.data.clone())
+            .ok_or_else(|| gvr.not_found_error(namespace, name))
     }
 
     pub fn update(
@@ -254,32 +261,34 @@ impl ObjectTracker {
         trace!("Updating object: {:?} in namespace: {}", gvr, namespace);
 
         let meta = self.extract_metadata(&object)?;
-        let name = meta
-            .name
-            .clone()
-            .ok_or_else(|| Error::InvalidRequest("Object name is required".to_string()))?;
+        let name = Self::extract_name(&meta)?;
 
         let existing = self.get(gvr, namespace, &name)?;
         let existing_meta = self.extract_metadata(&existing)?;
 
+        // Validate resource version for optimistic locking
         if let Some(provided_rv) = &meta.resource_version {
             if let Some(current_rv) = &existing_meta.resource_version {
                 if provided_rv != current_rv && !provided_rv.is_empty() {
                     return Err(Error::Conflict(format!(
-                        "Resource version mismatch: expected {}, got {}",
-                        current_rv, provided_rv
+                        "Resource version mismatch: expected {current_rv}, got {provided_rv}"
                     )));
                 }
             }
         }
 
+        // Handle status subresource logic
         if self.has_status_subresource(gvk) {
             if is_status {
+                // Status update: preserve spec
                 if let Some(spec) = existing.get("spec") {
                     object["spec"] = spec.clone();
                 }
-            } else if let Some(status) = existing.get("status") {
-                object["status"] = status.clone();
+            } else {
+                // Regular update: preserve status
+                if let Some(status) = existing.get("status") {
+                    object["status"] = status.clone();
+                }
             }
         }
 
@@ -288,13 +297,14 @@ impl ObjectTracker {
         new_meta.uid = existing_meta.uid;
         new_meta.creation_timestamp = existing_meta.creation_timestamp;
 
-        // Increment generation when spec changes, but not for status-only updates
-        if !is_status {
-            new_meta.generation = Some(increment_generation(existing_meta.generation));
+        // Increment generation for spec changes, not for status-only updates
+        new_meta.generation = if is_status {
+            existing_meta.generation
         } else {
-            new_meta.generation = existing_meta.generation;
-        }
+            Some(increment_generation(existing_meta.generation))
+        };
 
+        // Validate deletion timestamp immutability
         if !deletion_timestamp_equal(
             &new_meta.deletion_timestamp,
             &existing_meta.deletion_timestamp,
@@ -306,6 +316,7 @@ impl ObjectTracker {
 
         object["metadata"] = serde_json::to_value(&new_meta)?;
 
+        // Delete if conditions are met
         if should_be_deleted(&new_meta) {
             return self.delete(gvr, namespace, &name);
         }
@@ -313,19 +324,15 @@ impl ObjectTracker {
         let stored = StoredObject {
             data: object.clone(),
             gvk: gvk.clone(),
-            metadata: new_meta.clone(),
+            metadata: new_meta,
         };
 
-        let mut objects = self.objects.write().unwrap();
-        let gvr_objects = objects
+        let mut objects = self.objects.write().expect("lock poisoned");
+        objects
             .get_mut(gvr)
+            .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
+            .and_then(|ns_objects| ns_objects.insert(name.clone(), stored))
             .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
-
-        let ns_objects = gvr_objects
-            .get_mut(namespace)
-            .ok_or_else(|| gvr.not_found_error(namespace, &name))?;
-
-        ns_objects.insert(name.clone(), stored);
 
         debug!("Updated object: {}/{}", namespace, name);
         Ok(object)
@@ -334,30 +341,25 @@ impl ObjectTracker {
     pub fn delete(&self, gvr: &GVR, namespace: &str, name: &str) -> Result<Value> {
         trace!("Deleting object: {:?} {}/{}", gvr, namespace, name);
 
-        let mut objects = self.objects.write().unwrap();
-        let gvr_objects = objects
+        let mut objects = self.objects.write().expect("lock poisoned");
+
+        objects
             .get_mut(gvr)
-            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
-
-        let ns_objects = gvr_objects
-            .get_mut(namespace)
-            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
-
-        let stored = ns_objects
-            .remove(name)
-            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
-
-        debug!("Deleted object: {}/{}", namespace, name);
-        Ok(stored.data)
+            .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
+            .and_then(|ns_objects| ns_objects.remove(name))
+            .map(|stored| {
+                debug!("Deleted object: {}/{}", namespace, name);
+                stored.data
+            })
+            .ok_or_else(|| gvr.not_found_error(namespace, name))
     }
 
     pub fn list(&self, gvr: &GVR, namespace: Option<&str>) -> Result<Vec<Value>> {
         trace!("Listing objects: {:?} in namespace: {:?}", gvr, namespace);
 
-        let objects = self.objects.read().unwrap();
+        let objects = self.objects.read().expect("lock poisoned");
 
-        // If no objects of this type exist, return empty list instead of NotFound error
-        // This matches Kubernetes API behavior
+        // If no objects of this type exist, return empty list (matches Kubernetes API behavior)
         let Some(gvr_objects) = objects.get(gvr) else {
             return Ok(Vec::new());
         };
@@ -377,12 +379,13 @@ impl ObjectTracker {
     }
 
     fn extract_metadata(&self, object: &Value) -> Result<ObjectMeta> {
-        let meta_value = object
+        object
             .get("metadata")
-            .ok_or_else(|| Error::MetadataError("Object missing metadata field".to_string()))?;
-
-        serde_json::from_value(meta_value.clone())
-            .map_err(|e| Error::MetadataError(format!("Failed to parse metadata: {}", e)))
+            .ok_or_else(|| Error::MetadataError("Object missing metadata field".to_string()))
+            .and_then(|meta_value| {
+                serde_json::from_value(meta_value.clone())
+                    .map_err(|e| Error::MetadataError(format!("Failed to parse metadata: {e}")))
+            })
     }
 }
 

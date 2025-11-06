@@ -2,6 +2,7 @@
 // DO NOT EDIT - changes will be overwritten
 
 /// Returns true if the resource is namespaced, false if cluster-scoped
+#[allow(clippy::match_like_matches_macro)]
 pub fn is_namespaced(group: &str, version: &str, kind: &str) -> Option<bool> {
     match (group, version, kind) {
         ("", "v1", "Binding") => Some(true),
@@ -66,9 +67,13 @@ pub fn is_namespaced(group: &str, version: &str, kind: &str) -> Option<bool> {
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding") => Some(false),
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration") => Some(false),
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy") => Some(false),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding") => Some(false),
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding") => {
+            Some(false)
+        }
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy") => Some(false),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding") => Some(false),
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding") => {
+            Some(false)
+        }
         ("apiextensions.k8s.io", "v1", "CustomResourceDefinition") => Some(false),
         ("scheduling.k8s.io", "v1", "PriorityClass") => Some(false),
         ("coordination.k8s.io", "v1", "Lease") => Some(true),
@@ -126,17 +131,25 @@ pub fn get_plural(group: &str, version: &str, kind: &str) -> Option<&'static str
         ("events.k8s.io", "v1", "Event") => Some("events"),
         ("authentication.k8s.io", "v1", "SelfSubjectReview") => Some("selfsubjectreviews"),
         ("authentication.k8s.io", "v1", "TokenReview") => Some("tokenreviews"),
-        ("authorization.k8s.io", "v1", "LocalSubjectAccessReview") => Some("localsubjectaccessreviews"),
-        ("authorization.k8s.io", "v1", "SelfSubjectAccessReview") => Some("selfsubjectaccessreviews"),
+        ("authorization.k8s.io", "v1", "LocalSubjectAccessReview") => {
+            Some("localsubjectaccessreviews")
+        }
+        ("authorization.k8s.io", "v1", "SelfSubjectAccessReview") => {
+            Some("selfsubjectaccessreviews")
+        }
         ("authorization.k8s.io", "v1", "SelfSubjectRulesReview") => Some("selfsubjectrulesreviews"),
         ("authorization.k8s.io", "v1", "SubjectAccessReview") => Some("subjectaccessreviews"),
         ("autoscaling", "v2", "HorizontalPodAutoscaler") => Some("horizontalpodautoscalers"),
         ("autoscaling", "v1", "HorizontalPodAutoscaler") => Some("horizontalpodautoscalers"),
         ("batch", "v1", "CronJob") => Some("cronjobs"),
         ("batch", "v1", "Job") => Some("jobs"),
-        ("certificates.k8s.io", "v1", "CertificateSigningRequest") => Some("certificatesigningrequests"),
+        ("certificates.k8s.io", "v1", "CertificateSigningRequest") => {
+            Some("certificatesigningrequests")
+        }
         ("certificates.k8s.io", "v1beta1", "ClusterTrustBundle") => Some("clustertrustbundles"),
-        ("certificates.k8s.io", "v1beta1", "PodCertificateRequest") => Some("podcertificaterequests"),
+        ("certificates.k8s.io", "v1beta1", "PodCertificateRequest") => {
+            Some("podcertificaterequests")
+        }
         ("certificates.k8s.io", "v1alpha1", "ClusterTrustBundle") => Some("clustertrustbundles"),
         ("networking.k8s.io", "v1", "IngressClass") => Some("ingressclasses"),
         ("networking.k8s.io", "v1", "Ingress") => Some("ingresses"),
@@ -157,15 +170,33 @@ pub fn get_plural(group: &str, version: &str, kind: &str) -> Option<&'static str
         ("storage.k8s.io", "v1", "VolumeAttachment") => Some("volumeattachments"),
         ("storage.k8s.io", "v1", "VolumeAttributesClass") => Some("volumeattributesclasses"),
         ("storage.k8s.io", "v1beta1", "VolumeAttributesClass") => Some("volumeattributesclasses"),
-        ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration") => Some("mutatingwebhookconfigurations"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy") => Some("validatingadmissionpolicies"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding") => Some("validatingadmissionpolicybindings"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration") => Some("validatingwebhookconfigurations"),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy") => Some("mutatingadmissionpolicies"),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding") => Some("mutatingadmissionpolicybindings"),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy") => Some("mutatingadmissionpolicies"),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding") => Some("mutatingadmissionpolicybindings"),
-        ("apiextensions.k8s.io", "v1", "CustomResourceDefinition") => Some("customresourcedefinitions"),
+        ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration") => {
+            Some("mutatingwebhookconfigurations")
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy") => {
+            Some("validatingadmissionpolicies")
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding") => {
+            Some("validatingadmissionpolicybindings")
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration") => {
+            Some("validatingwebhookconfigurations")
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy") => {
+            Some("mutatingadmissionpolicies")
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding") => {
+            Some("mutatingadmissionpolicybindings")
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy") => {
+            Some("mutatingadmissionpolicies")
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding") => {
+            Some("mutatingadmissionpolicybindings")
+        }
+        ("apiextensions.k8s.io", "v1", "CustomResourceDefinition") => {
+            Some("customresourcedefinitions")
+        }
         ("scheduling.k8s.io", "v1", "PriorityClass") => Some("priorityclasses"),
         ("coordination.k8s.io", "v1", "Lease") => Some("leases"),
         ("coordination.k8s.io", "v1beta1", "LeaseCandidate") => Some("leasecandidates"),
@@ -186,9 +217,13 @@ pub fn get_plural(group: &str, version: &str, kind: &str) -> Option<&'static str
         ("resource.k8s.io", "v1beta1", "ResourceSlice") => Some("resourceslices"),
         ("resource.k8s.io", "v1alpha3", "DeviceTaintRule") => Some("devicetaintrules"),
         ("flowcontrol.apiserver.k8s.io", "v1", "FlowSchema") => Some("flowschemas"),
-        ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration") => Some("prioritylevelconfigurations"),
+        ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration") => {
+            Some("prioritylevelconfigurations")
+        }
         ("internal.apiserver.k8s.io", "v1alpha1", "StorageVersion") => Some("storageversions"),
-        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration") => Some("storageversionmigrations"),
+        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration") => {
+            Some("storageversionmigrations")
+        }
         _ => None,
     }
 }
@@ -222,17 +257,25 @@ pub fn get_singular(group: &str, version: &str, kind: &str) -> Option<&'static s
         ("events.k8s.io", "v1", "Event") => Some("event"),
         ("authentication.k8s.io", "v1", "SelfSubjectReview") => Some("selfsubjectreview"),
         ("authentication.k8s.io", "v1", "TokenReview") => Some("tokenreview"),
-        ("authorization.k8s.io", "v1", "LocalSubjectAccessReview") => Some("localsubjectaccessreview"),
-        ("authorization.k8s.io", "v1", "SelfSubjectAccessReview") => Some("selfsubjectaccessreview"),
+        ("authorization.k8s.io", "v1", "LocalSubjectAccessReview") => {
+            Some("localsubjectaccessreview")
+        }
+        ("authorization.k8s.io", "v1", "SelfSubjectAccessReview") => {
+            Some("selfsubjectaccessreview")
+        }
         ("authorization.k8s.io", "v1", "SelfSubjectRulesReview") => Some("selfsubjectrulesreview"),
         ("authorization.k8s.io", "v1", "SubjectAccessReview") => Some("subjectaccessreview"),
         ("autoscaling", "v2", "HorizontalPodAutoscaler") => Some("horizontalpodautoscaler"),
         ("autoscaling", "v1", "HorizontalPodAutoscaler") => Some("horizontalpodautoscaler"),
         ("batch", "v1", "CronJob") => Some("cronjob"),
         ("batch", "v1", "Job") => Some("job"),
-        ("certificates.k8s.io", "v1", "CertificateSigningRequest") => Some("certificatesigningrequest"),
+        ("certificates.k8s.io", "v1", "CertificateSigningRequest") => {
+            Some("certificatesigningrequest")
+        }
         ("certificates.k8s.io", "v1beta1", "ClusterTrustBundle") => Some("clustertrustbundle"),
-        ("certificates.k8s.io", "v1beta1", "PodCertificateRequest") => Some("podcertificaterequest"),
+        ("certificates.k8s.io", "v1beta1", "PodCertificateRequest") => {
+            Some("podcertificaterequest")
+        }
         ("certificates.k8s.io", "v1alpha1", "ClusterTrustBundle") => Some("clustertrustbundle"),
         ("networking.k8s.io", "v1", "IngressClass") => Some("ingressclass"),
         ("networking.k8s.io", "v1", "Ingress") => Some("ingress"),
@@ -253,15 +296,33 @@ pub fn get_singular(group: &str, version: &str, kind: &str) -> Option<&'static s
         ("storage.k8s.io", "v1", "VolumeAttachment") => Some("volumeattachment"),
         ("storage.k8s.io", "v1", "VolumeAttributesClass") => Some("volumeattributesclass"),
         ("storage.k8s.io", "v1beta1", "VolumeAttributesClass") => Some("volumeattributesclass"),
-        ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration") => Some("mutatingwebhookconfiguration"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy") => Some("validatingadmissionpolicy"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding") => Some("validatingadmissionpolicybinding"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration") => Some("validatingwebhookconfiguration"),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy") => Some("mutatingadmissionpolicy"),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding") => Some("mutatingadmissionpolicybinding"),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy") => Some("mutatingadmissionpolicy"),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding") => Some("mutatingadmissionpolicybinding"),
-        ("apiextensions.k8s.io", "v1", "CustomResourceDefinition") => Some("customresourcedefinition"),
+        ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration") => {
+            Some("mutatingwebhookconfiguration")
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy") => {
+            Some("validatingadmissionpolicy")
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding") => {
+            Some("validatingadmissionpolicybinding")
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration") => {
+            Some("validatingwebhookconfiguration")
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy") => {
+            Some("mutatingadmissionpolicy")
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding") => {
+            Some("mutatingadmissionpolicybinding")
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy") => {
+            Some("mutatingadmissionpolicy")
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding") => {
+            Some("mutatingadmissionpolicybinding")
+        }
+        ("apiextensions.k8s.io", "v1", "CustomResourceDefinition") => {
+            Some("customresourcedefinition")
+        }
         ("scheduling.k8s.io", "v1", "PriorityClass") => Some("priorityclass"),
         ("coordination.k8s.io", "v1", "Lease") => Some("lease"),
         ("coordination.k8s.io", "v1beta1", "LeaseCandidate") => Some("leasecandidate"),
@@ -282,9 +343,13 @@ pub fn get_singular(group: &str, version: &str, kind: &str) -> Option<&'static s
         ("resource.k8s.io", "v1beta1", "ResourceSlice") => Some("resourceslice"),
         ("resource.k8s.io", "v1alpha3", "DeviceTaintRule") => Some("devicetaintrule"),
         ("flowcontrol.apiserver.k8s.io", "v1", "FlowSchema") => Some("flowschema"),
-        ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration") => Some("prioritylevelconfiguration"),
+        ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration") => {
+            Some("prioritylevelconfiguration")
+        }
         ("internal.apiserver.k8s.io", "v1alpha1", "StorageVersion") => Some("storageversion"),
-        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration") => Some("storageversionmigration"),
+        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration") => {
+            Some("storageversionmigration")
+        }
         _ => None,
     }
 }
@@ -318,17 +383,25 @@ pub fn plural_to_kind(group: &str, version: &str, plural: &str) -> Option<&'stat
         ("events.k8s.io", "v1", "events") => Some("Event"),
         ("authentication.k8s.io", "v1", "selfsubjectreviews") => Some("SelfSubjectReview"),
         ("authentication.k8s.io", "v1", "tokenreviews") => Some("TokenReview"),
-        ("authorization.k8s.io", "v1", "localsubjectaccessreviews") => Some("LocalSubjectAccessReview"),
-        ("authorization.k8s.io", "v1", "selfsubjectaccessreviews") => Some("SelfSubjectAccessReview"),
+        ("authorization.k8s.io", "v1", "localsubjectaccessreviews") => {
+            Some("LocalSubjectAccessReview")
+        }
+        ("authorization.k8s.io", "v1", "selfsubjectaccessreviews") => {
+            Some("SelfSubjectAccessReview")
+        }
         ("authorization.k8s.io", "v1", "selfsubjectrulesreviews") => Some("SelfSubjectRulesReview"),
         ("authorization.k8s.io", "v1", "subjectaccessreviews") => Some("SubjectAccessReview"),
         ("autoscaling", "v2", "horizontalpodautoscalers") => Some("HorizontalPodAutoscaler"),
         ("autoscaling", "v1", "horizontalpodautoscalers") => Some("HorizontalPodAutoscaler"),
         ("batch", "v1", "cronjobs") => Some("CronJob"),
         ("batch", "v1", "jobs") => Some("Job"),
-        ("certificates.k8s.io", "v1", "certificatesigningrequests") => Some("CertificateSigningRequest"),
+        ("certificates.k8s.io", "v1", "certificatesigningrequests") => {
+            Some("CertificateSigningRequest")
+        }
         ("certificates.k8s.io", "v1beta1", "clustertrustbundles") => Some("ClusterTrustBundle"),
-        ("certificates.k8s.io", "v1beta1", "podcertificaterequests") => Some("PodCertificateRequest"),
+        ("certificates.k8s.io", "v1beta1", "podcertificaterequests") => {
+            Some("PodCertificateRequest")
+        }
         ("certificates.k8s.io", "v1alpha1", "clustertrustbundles") => Some("ClusterTrustBundle"),
         ("networking.k8s.io", "v1", "ingressclasses") => Some("IngressClass"),
         ("networking.k8s.io", "v1", "ingresses") => Some("Ingress"),
@@ -349,15 +422,33 @@ pub fn plural_to_kind(group: &str, version: &str, plural: &str) -> Option<&'stat
         ("storage.k8s.io", "v1", "volumeattachments") => Some("VolumeAttachment"),
         ("storage.k8s.io", "v1", "volumeattributesclasses") => Some("VolumeAttributesClass"),
         ("storage.k8s.io", "v1beta1", "volumeattributesclasses") => Some("VolumeAttributesClass"),
-        ("admissionregistration.k8s.io", "v1", "mutatingwebhookconfigurations") => Some("MutatingWebhookConfiguration"),
-        ("admissionregistration.k8s.io", "v1", "validatingadmissionpolicies") => Some("ValidatingAdmissionPolicy"),
-        ("admissionregistration.k8s.io", "v1", "validatingadmissionpolicybindings") => Some("ValidatingAdmissionPolicyBinding"),
-        ("admissionregistration.k8s.io", "v1", "validatingwebhookconfigurations") => Some("ValidatingWebhookConfiguration"),
-        ("admissionregistration.k8s.io", "v1beta1", "mutatingadmissionpolicies") => Some("MutatingAdmissionPolicy"),
-        ("admissionregistration.k8s.io", "v1beta1", "mutatingadmissionpolicybindings") => Some("MutatingAdmissionPolicyBinding"),
-        ("admissionregistration.k8s.io", "v1alpha1", "mutatingadmissionpolicies") => Some("MutatingAdmissionPolicy"),
-        ("admissionregistration.k8s.io", "v1alpha1", "mutatingadmissionpolicybindings") => Some("MutatingAdmissionPolicyBinding"),
-        ("apiextensions.k8s.io", "v1", "customresourcedefinitions") => Some("CustomResourceDefinition"),
+        ("admissionregistration.k8s.io", "v1", "mutatingwebhookconfigurations") => {
+            Some("MutatingWebhookConfiguration")
+        }
+        ("admissionregistration.k8s.io", "v1", "validatingadmissionpolicies") => {
+            Some("ValidatingAdmissionPolicy")
+        }
+        ("admissionregistration.k8s.io", "v1", "validatingadmissionpolicybindings") => {
+            Some("ValidatingAdmissionPolicyBinding")
+        }
+        ("admissionregistration.k8s.io", "v1", "validatingwebhookconfigurations") => {
+            Some("ValidatingWebhookConfiguration")
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "mutatingadmissionpolicies") => {
+            Some("MutatingAdmissionPolicy")
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "mutatingadmissionpolicybindings") => {
+            Some("MutatingAdmissionPolicyBinding")
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "mutatingadmissionpolicies") => {
+            Some("MutatingAdmissionPolicy")
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "mutatingadmissionpolicybindings") => {
+            Some("MutatingAdmissionPolicyBinding")
+        }
+        ("apiextensions.k8s.io", "v1", "customresourcedefinitions") => {
+            Some("CustomResourceDefinition")
+        }
         ("scheduling.k8s.io", "v1", "priorityclasses") => Some("PriorityClass"),
         ("coordination.k8s.io", "v1", "leases") => Some("Lease"),
         ("coordination.k8s.io", "v1beta1", "leasecandidates") => Some("LeaseCandidate"),
@@ -378,14 +469,19 @@ pub fn plural_to_kind(group: &str, version: &str, plural: &str) -> Option<&'stat
         ("resource.k8s.io", "v1beta1", "resourceslices") => Some("ResourceSlice"),
         ("resource.k8s.io", "v1alpha3", "devicetaintrules") => Some("DeviceTaintRule"),
         ("flowcontrol.apiserver.k8s.io", "v1", "flowschemas") => Some("FlowSchema"),
-        ("flowcontrol.apiserver.k8s.io", "v1", "prioritylevelconfigurations") => Some("PriorityLevelConfiguration"),
+        ("flowcontrol.apiserver.k8s.io", "v1", "prioritylevelconfigurations") => {
+            Some("PriorityLevelConfiguration")
+        }
         ("internal.apiserver.k8s.io", "v1alpha1", "storageversions") => Some("StorageVersion"),
-        ("storagemigration.k8s.io", "v1beta1", "storageversionmigrations") => Some("StorageVersionMigration"),
+        ("storagemigration.k8s.io", "v1beta1", "storageversionmigrations") => {
+            Some("StorageVersionMigration")
+        }
         _ => None,
     }
 }
 
 /// Returns true if the resource has the specified subresource
+#[allow(clippy::match_like_matches_macro)]
 pub fn has_subresource(group: &str, version: &str, kind: &str, subresource: &str) -> bool {
     match (group, version, kind, subresource) {
         ("", "v1", "Namespace", "finalize") => true,
@@ -485,6 +581,7 @@ pub fn get_short_names(group: &str, version: &str, kind: &str) -> &'static [&'st
 }
 
 /// Returns true if the resource supports the given verb
+#[allow(clippy::match_like_matches_macro)]
 pub fn supports_verb(group: &str, version: &str, kind: &str, verb: &str) -> bool {
     match (group, version, kind, verb) {
         ("", "v1", "Binding", "create") => true,
@@ -889,7 +986,12 @@ pub fn supports_verb(group: &str, version: &str, kind: &str, verb: &str) -> bool
         ("storage.k8s.io", "v1beta1", "VolumeAttributesClass", "watch") => true,
         ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "create") => true,
         ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "delete") => true,
-        ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "deletecollection") => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "MutatingWebhookConfiguration",
+            "deletecollection",
+        ) => true,
         ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "get") => true,
         ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "list") => true,
         ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "patch") => true,
@@ -897,23 +999,41 @@ pub fn supports_verb(group: &str, version: &str, kind: &str, verb: &str) -> bool
         ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "watch") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "create") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "delete") => true,
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "deletecollection") => true,
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "deletecollection") => {
+            true
+        }
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "get") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "list") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "patch") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "update") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "watch") => true,
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "create") => true,
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "delete") => true,
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "deletecollection") => true,
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "create") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "delete") => {
+            true
+        }
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingAdmissionPolicyBinding",
+            "deletecollection",
+        ) => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "get") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "list") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "patch") => true,
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "update") => true,
+        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "update") => {
+            true
+        }
         ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "watch") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "create") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "delete") => true,
-        ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "deletecollection") => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingWebhookConfiguration",
+            "deletecollection",
+        ) => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "get") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "list") => true,
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "patch") => true,
@@ -921,36 +1041,93 @@ pub fn supports_verb(group: &str, version: &str, kind: &str, verb: &str) -> bool
         ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "watch") => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "create") => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "delete") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "deletecollection") => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1beta1",
+            "MutatingAdmissionPolicy",
+            "deletecollection",
+        ) => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "get") => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "list") => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "patch") => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "update") => true,
         ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "watch") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "create") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "delete") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "deletecollection") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "get") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "list") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "patch") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "update") => true,
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "watch") => true,
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "create") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "delete") => {
+            true
+        }
+        (
+            "admissionregistration.k8s.io",
+            "v1beta1",
+            "MutatingAdmissionPolicyBinding",
+            "deletecollection",
+        ) => true,
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "get") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "list") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "patch") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "update") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "watch") => {
+            true
+        }
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "create") => true,
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "delete") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "deletecollection") => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicy",
+            "deletecollection",
+        ) => true,
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "get") => true,
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "list") => true,
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "patch") => true,
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "update") => true,
         ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "watch") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "create") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "delete") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "deletecollection") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "get") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "list") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "patch") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "update") => true,
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "watch") => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicyBinding",
+            "create",
+        ) => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicyBinding",
+            "delete",
+        ) => true,
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicyBinding",
+            "deletecollection",
+        ) => true,
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "get") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "list") => {
+            true
+        }
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "patch") => {
+            true
+        }
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicyBinding",
+            "update",
+        ) => true,
+        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "watch") => {
+            true
+        }
         ("apiextensions.k8s.io", "v1", "CustomResourceDefinition", "create") => true,
         ("apiextensions.k8s.io", "v1", "CustomResourceDefinition", "delete") => true,
         ("apiextensions.k8s.io", "v1", "CustomResourceDefinition", "deletecollection") => true,
@@ -1121,7 +1298,12 @@ pub fn supports_verb(group: &str, version: &str, kind: &str, verb: &str) -> bool
         ("flowcontrol.apiserver.k8s.io", "v1", "FlowSchema", "watch") => true,
         ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "create") => true,
         ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "delete") => true,
-        ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "deletecollection") => true,
+        (
+            "flowcontrol.apiserver.k8s.io",
+            "v1",
+            "PriorityLevelConfiguration",
+            "deletecollection",
+        ) => true,
         ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "get") => true,
         ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "list") => true,
         ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "patch") => true,
@@ -1137,7 +1319,9 @@ pub fn supports_verb(group: &str, version: &str, kind: &str, verb: &str) -> bool
         ("internal.apiserver.k8s.io", "v1alpha1", "StorageVersion", "watch") => true,
         ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "create") => true,
         ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "delete") => true,
-        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "deletecollection") => true,
+        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "deletecollection") => {
+            true
+        }
         ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "get") => true,
         ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "list") => true,
         ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "patch") => true,
@@ -1175,70 +1359,295 @@ pub fn list_resources() -> &'static [(&'static str, &'static str, &'static str, 
         ("apps", "v1", "ReplicaSet", "replicasets"),
         ("apps", "v1", "StatefulSet", "statefulsets"),
         ("events.k8s.io", "v1", "Event", "events"),
-        ("authentication.k8s.io", "v1", "SelfSubjectReview", "selfsubjectreviews"),
+        (
+            "authentication.k8s.io",
+            "v1",
+            "SelfSubjectReview",
+            "selfsubjectreviews",
+        ),
         ("authentication.k8s.io", "v1", "TokenReview", "tokenreviews"),
-        ("authorization.k8s.io", "v1", "LocalSubjectAccessReview", "localsubjectaccessreviews"),
-        ("authorization.k8s.io", "v1", "SelfSubjectAccessReview", "selfsubjectaccessreviews"),
-        ("authorization.k8s.io", "v1", "SelfSubjectRulesReview", "selfsubjectrulesreviews"),
-        ("authorization.k8s.io", "v1", "SubjectAccessReview", "subjectaccessreviews"),
-        ("autoscaling", "v2", "HorizontalPodAutoscaler", "horizontalpodautoscalers"),
-        ("autoscaling", "v1", "HorizontalPodAutoscaler", "horizontalpodautoscalers"),
+        (
+            "authorization.k8s.io",
+            "v1",
+            "LocalSubjectAccessReview",
+            "localsubjectaccessreviews",
+        ),
+        (
+            "authorization.k8s.io",
+            "v1",
+            "SelfSubjectAccessReview",
+            "selfsubjectaccessreviews",
+        ),
+        (
+            "authorization.k8s.io",
+            "v1",
+            "SelfSubjectRulesReview",
+            "selfsubjectrulesreviews",
+        ),
+        (
+            "authorization.k8s.io",
+            "v1",
+            "SubjectAccessReview",
+            "subjectaccessreviews",
+        ),
+        (
+            "autoscaling",
+            "v2",
+            "HorizontalPodAutoscaler",
+            "horizontalpodautoscalers",
+        ),
+        (
+            "autoscaling",
+            "v1",
+            "HorizontalPodAutoscaler",
+            "horizontalpodautoscalers",
+        ),
         ("batch", "v1", "CronJob", "cronjobs"),
         ("batch", "v1", "Job", "jobs"),
-        ("certificates.k8s.io", "v1", "CertificateSigningRequest", "certificatesigningrequests"),
-        ("certificates.k8s.io", "v1beta1", "ClusterTrustBundle", "clustertrustbundles"),
-        ("certificates.k8s.io", "v1beta1", "PodCertificateRequest", "podcertificaterequests"),
-        ("certificates.k8s.io", "v1alpha1", "ClusterTrustBundle", "clustertrustbundles"),
+        (
+            "certificates.k8s.io",
+            "v1",
+            "CertificateSigningRequest",
+            "certificatesigningrequests",
+        ),
+        (
+            "certificates.k8s.io",
+            "v1beta1",
+            "ClusterTrustBundle",
+            "clustertrustbundles",
+        ),
+        (
+            "certificates.k8s.io",
+            "v1beta1",
+            "PodCertificateRequest",
+            "podcertificaterequests",
+        ),
+        (
+            "certificates.k8s.io",
+            "v1alpha1",
+            "ClusterTrustBundle",
+            "clustertrustbundles",
+        ),
         ("networking.k8s.io", "v1", "IngressClass", "ingressclasses"),
         ("networking.k8s.io", "v1", "Ingress", "ingresses"),
         ("networking.k8s.io", "v1", "IPAddress", "ipaddresses"),
-        ("networking.k8s.io", "v1", "NetworkPolicy", "networkpolicies"),
+        (
+            "networking.k8s.io",
+            "v1",
+            "NetworkPolicy",
+            "networkpolicies",
+        ),
         ("networking.k8s.io", "v1", "ServiceCIDR", "servicecidrs"),
         ("networking.k8s.io", "v1beta1", "IPAddress", "ipaddresses"),
-        ("networking.k8s.io", "v1beta1", "ServiceCIDR", "servicecidrs"),
-        ("policy", "v1", "PodDisruptionBudget", "poddisruptionbudgets"),
-        ("rbac.authorization.k8s.io", "v1", "ClusterRoleBinding", "clusterrolebindings"),
-        ("rbac.authorization.k8s.io", "v1", "ClusterRole", "clusterroles"),
-        ("rbac.authorization.k8s.io", "v1", "RoleBinding", "rolebindings"),
+        (
+            "networking.k8s.io",
+            "v1beta1",
+            "ServiceCIDR",
+            "servicecidrs",
+        ),
+        (
+            "policy",
+            "v1",
+            "PodDisruptionBudget",
+            "poddisruptionbudgets",
+        ),
+        (
+            "rbac.authorization.k8s.io",
+            "v1",
+            "ClusterRoleBinding",
+            "clusterrolebindings",
+        ),
+        (
+            "rbac.authorization.k8s.io",
+            "v1",
+            "ClusterRole",
+            "clusterroles",
+        ),
+        (
+            "rbac.authorization.k8s.io",
+            "v1",
+            "RoleBinding",
+            "rolebindings",
+        ),
         ("rbac.authorization.k8s.io", "v1", "Role", "roles"),
         ("storage.k8s.io", "v1", "CSIDriver", "csidrivers"),
         ("storage.k8s.io", "v1", "CSINode", "csinodes"),
-        ("storage.k8s.io", "v1", "CSIStorageCapacity", "csistoragecapacities"),
+        (
+            "storage.k8s.io",
+            "v1",
+            "CSIStorageCapacity",
+            "csistoragecapacities",
+        ),
         ("storage.k8s.io", "v1", "StorageClass", "storageclasses"),
-        ("storage.k8s.io", "v1", "VolumeAttachment", "volumeattachments"),
-        ("storage.k8s.io", "v1", "VolumeAttributesClass", "volumeattributesclasses"),
-        ("storage.k8s.io", "v1beta1", "VolumeAttributesClass", "volumeattributesclasses"),
-        ("admissionregistration.k8s.io", "v1", "MutatingWebhookConfiguration", "mutatingwebhookconfigurations"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicy", "validatingadmissionpolicies"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingAdmissionPolicyBinding", "validatingadmissionpolicybindings"),
-        ("admissionregistration.k8s.io", "v1", "ValidatingWebhookConfiguration", "validatingwebhookconfigurations"),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicy", "mutatingadmissionpolicies"),
-        ("admissionregistration.k8s.io", "v1beta1", "MutatingAdmissionPolicyBinding", "mutatingadmissionpolicybindings"),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicy", "mutatingadmissionpolicies"),
-        ("admissionregistration.k8s.io", "v1alpha1", "MutatingAdmissionPolicyBinding", "mutatingadmissionpolicybindings"),
-        ("apiextensions.k8s.io", "v1", "CustomResourceDefinition", "customresourcedefinitions"),
-        ("scheduling.k8s.io", "v1", "PriorityClass", "priorityclasses"),
+        (
+            "storage.k8s.io",
+            "v1",
+            "VolumeAttachment",
+            "volumeattachments",
+        ),
+        (
+            "storage.k8s.io",
+            "v1",
+            "VolumeAttributesClass",
+            "volumeattributesclasses",
+        ),
+        (
+            "storage.k8s.io",
+            "v1beta1",
+            "VolumeAttributesClass",
+            "volumeattributesclasses",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "MutatingWebhookConfiguration",
+            "mutatingwebhookconfigurations",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingAdmissionPolicy",
+            "validatingadmissionpolicies",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingAdmissionPolicyBinding",
+            "validatingadmissionpolicybindings",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1",
+            "ValidatingWebhookConfiguration",
+            "validatingwebhookconfigurations",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1beta1",
+            "MutatingAdmissionPolicy",
+            "mutatingadmissionpolicies",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1beta1",
+            "MutatingAdmissionPolicyBinding",
+            "mutatingadmissionpolicybindings",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicy",
+            "mutatingadmissionpolicies",
+        ),
+        (
+            "admissionregistration.k8s.io",
+            "v1alpha1",
+            "MutatingAdmissionPolicyBinding",
+            "mutatingadmissionpolicybindings",
+        ),
+        (
+            "apiextensions.k8s.io",
+            "v1",
+            "CustomResourceDefinition",
+            "customresourcedefinitions",
+        ),
+        (
+            "scheduling.k8s.io",
+            "v1",
+            "PriorityClass",
+            "priorityclasses",
+        ),
         ("coordination.k8s.io", "v1", "Lease", "leases"),
-        ("coordination.k8s.io", "v1beta1", "LeaseCandidate", "leasecandidates"),
-        ("coordination.k8s.io", "v1alpha2", "LeaseCandidate", "leasecandidates"),
+        (
+            "coordination.k8s.io",
+            "v1beta1",
+            "LeaseCandidate",
+            "leasecandidates",
+        ),
+        (
+            "coordination.k8s.io",
+            "v1alpha2",
+            "LeaseCandidate",
+            "leasecandidates",
+        ),
         ("node.k8s.io", "v1", "RuntimeClass", "runtimeclasses"),
         ("discovery.k8s.io", "v1", "EndpointSlice", "endpointslices"),
         ("resource.k8s.io", "v1", "DeviceClass", "deviceclasses"),
         ("resource.k8s.io", "v1", "ResourceClaim", "resourceclaims"),
-        ("resource.k8s.io", "v1", "ResourceClaimTemplate", "resourceclaimtemplates"),
+        (
+            "resource.k8s.io",
+            "v1",
+            "ResourceClaimTemplate",
+            "resourceclaimtemplates",
+        ),
         ("resource.k8s.io", "v1", "ResourceSlice", "resourceslices"),
         ("resource.k8s.io", "v1beta2", "DeviceClass", "deviceclasses"),
-        ("resource.k8s.io", "v1beta2", "ResourceClaim", "resourceclaims"),
-        ("resource.k8s.io", "v1beta2", "ResourceClaimTemplate", "resourceclaimtemplates"),
-        ("resource.k8s.io", "v1beta2", "ResourceSlice", "resourceslices"),
+        (
+            "resource.k8s.io",
+            "v1beta2",
+            "ResourceClaim",
+            "resourceclaims",
+        ),
+        (
+            "resource.k8s.io",
+            "v1beta2",
+            "ResourceClaimTemplate",
+            "resourceclaimtemplates",
+        ),
+        (
+            "resource.k8s.io",
+            "v1beta2",
+            "ResourceSlice",
+            "resourceslices",
+        ),
         ("resource.k8s.io", "v1beta1", "DeviceClass", "deviceclasses"),
-        ("resource.k8s.io", "v1beta1", "ResourceClaim", "resourceclaims"),
-        ("resource.k8s.io", "v1beta1", "ResourceClaimTemplate", "resourceclaimtemplates"),
-        ("resource.k8s.io", "v1beta1", "ResourceSlice", "resourceslices"),
-        ("resource.k8s.io", "v1alpha3", "DeviceTaintRule", "devicetaintrules"),
-        ("flowcontrol.apiserver.k8s.io", "v1", "FlowSchema", "flowschemas"),
-        ("flowcontrol.apiserver.k8s.io", "v1", "PriorityLevelConfiguration", "prioritylevelconfigurations"),
-        ("internal.apiserver.k8s.io", "v1alpha1", "StorageVersion", "storageversions"),
-        ("storagemigration.k8s.io", "v1beta1", "StorageVersionMigration", "storageversionmigrations"),
+        (
+            "resource.k8s.io",
+            "v1beta1",
+            "ResourceClaim",
+            "resourceclaims",
+        ),
+        (
+            "resource.k8s.io",
+            "v1beta1",
+            "ResourceClaimTemplate",
+            "resourceclaimtemplates",
+        ),
+        (
+            "resource.k8s.io",
+            "v1beta1",
+            "ResourceSlice",
+            "resourceslices",
+        ),
+        (
+            "resource.k8s.io",
+            "v1alpha3",
+            "DeviceTaintRule",
+            "devicetaintrules",
+        ),
+        (
+            "flowcontrol.apiserver.k8s.io",
+            "v1",
+            "FlowSchema",
+            "flowschemas",
+        ),
+        (
+            "flowcontrol.apiserver.k8s.io",
+            "v1",
+            "PriorityLevelConfiguration",
+            "prioritylevelconfigurations",
+        ),
+        (
+            "internal.apiserver.k8s.io",
+            "v1alpha1",
+            "StorageVersion",
+            "storageversions",
+        ),
+        (
+            "storagemigration.k8s.io",
+            "v1beta1",
+            "StorageVersionMigration",
+            "storageversionmigrations",
+        ),
     ]
 }

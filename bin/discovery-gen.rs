@@ -260,7 +260,7 @@ fn extract_core_subresources(resources: &[CoreAPIResource]) -> HashMap<String, V
 
             subresources
                 .entry(parent_name.to_string())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(Subresource {
                     name: subresource_name.to_string(),
                     verbs: resource.verbs.clone(),

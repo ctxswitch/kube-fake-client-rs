@@ -1069,5 +1069,4 @@ mod tests {
             .unwrap();
         assert_eq!(created_cache.metadata.name, Some("redis-cache".to_string()));
     }
-
 }

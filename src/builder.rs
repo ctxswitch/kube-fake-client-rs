@@ -6,9 +6,9 @@ use crate::discovery::Discovery;
 use crate::interceptor;
 use crate::registry::ResourceRegistry;
 use crate::tracker::{GVK, GVR};
-use crate::validator::SchemaValidator;
 #[cfg(feature = "validation")]
 use crate::validator::RuntimeOpenAPIValidator;
+use crate::validator::SchemaValidator;
 use crate::{Error, Result};
 use kube::Resource;
 use serde::Serialize;
@@ -96,9 +96,10 @@ impl ClientBuilder {
     where
         K: Resource + Serialize,
     {
-        if let Ok(value) = serde_json::to_value(&obj) {
-            self.initial_objects.push(value);
-        }
+        let value = serde_json::to_value(&obj).expect(
+            "Failed to serialize object - this should not happen with valid Kubernetes types",
+        );
+        self.initial_objects.push(value);
         self
     }
 
@@ -108,9 +109,10 @@ impl ClientBuilder {
         K: Resource + Serialize,
     {
         for obj in objects {
-            if let Ok(value) = serde_json::to_value(&obj) {
-                self.initial_objects.push(value);
-            }
+            let value = serde_json::to_value(&obj).expect(
+                "Failed to serialize object - this should not happen with valid Kubernetes types",
+            );
+            self.initial_objects.push(value);
         }
         self
     }
@@ -148,7 +150,7 @@ impl ClientBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn with_resource<K>(mut self) -> Self
+    pub fn with_resource<K>(self) -> Self
     where
         K: Resource<DynamicType = ()>,
     {
@@ -183,10 +185,11 @@ impl ClientBuilder {
     {
         // Get GVK from a default instance
         let dummy = K::default();
-        let dummy_value = serde_json::to_value(&dummy).expect("Failed to serialize default object");
-        if let Ok(gvk) = extract_gvk(&dummy_value) {
-            self.with_status_subresource.push(gvk);
-        }
+        let dummy_value = serde_json::to_value(&dummy)
+            .expect("Failed to serialize default object - this should not happen with valid Kubernetes types");
+        let gvk = extract_gvk(&dummy_value)
+            .expect("Failed to extract GVK from resource - ensure apiVersion and kind are set");
+        self.with_status_subresource.push(gvk);
         self
     }
 
@@ -225,12 +228,12 @@ impl ClientBuilder {
     {
         // Get GVK from a default instance
         let dummy = K::default();
-        let dummy_value = serde_json::to_value(&dummy).expect("Failed to serialize default object");
-        if let Ok(gvk) = extract_gvk(&dummy_value) {
-            let field = field.into();
-            self.indexes.entry(gvk).or_default().insert(field, indexer);
-        }
-
+        let dummy_value = serde_json::to_value(&dummy)
+            .expect("Failed to serialize default object - this should not happen with valid Kubernetes types");
+        let gvk = extract_gvk(&dummy_value)
+            .expect("Failed to extract GVK from resource - ensure apiVersion and kind are set");
+        let field = field.into();
+        self.indexes.entry(gvk).or_default().insert(field, indexer);
         self
     }
 
@@ -398,14 +401,11 @@ impl ClientBuilder {
     /// - The GVK format is invalid
     /// - No OpenAPI definition exists for the GVK
     pub fn with_validation_for(self, gvk: &str) -> Result<Self> {
-        let validator = self
-            .runtime_validator
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Internal(
-                    "Call with_schema_validation_file() before with_validation_for()".to_string(),
-                )
-            })?;
+        let validator = self.runtime_validator.as_ref().ok_or_else(|| {
+            Error::Internal(
+                "Call with_schema_validation_file() before with_validation_for()".to_string(),
+            )
+        })?;
 
         validator.enable_validation_for(gvk)?;
         Ok(self)

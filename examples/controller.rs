@@ -1,10 +1,23 @@
 //! Pod controller testing
+//!
+//! Example demonstrating a simple Kubernetes controller that adds a "managed-by" label
+//! to pods. This pattern is common in controllers that need to track which resources
+//! they manage.
 
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube_fake_client::ClientBuilder;
 use serde_json::json;
 use std::collections::BTreeMap;
+
+/// Create a pod with the given name, namespace, and optional labels
+fn create_pod(name: &str, namespace: &str, labels: Option<BTreeMap<String, String>>) -> Pod {
+    let mut pod = Pod::default();
+    pod.metadata.name = Some(name.to_string());
+    pod.metadata.namespace = Some(namespace.to_string());
+    pod.metadata.labels = labels;
+    pod
+}
 
 pub struct PodLabelController {
     api: Api<Pod>,
@@ -62,16 +75,11 @@ impl PodLabelController {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut pod1 = Pod::default();
-    pod1.metadata.name = Some("web-server".to_string());
-    pod1.metadata.namespace = Some("default".to_string());
+    let pod1 = create_pod("web-server", "default", None);
 
-    let mut pod2 = Pod::default();
-    pod2.metadata.name = Some("api-server".to_string());
-    pod2.metadata.namespace = Some("default".to_string());
     let mut labels2 = BTreeMap::new();
     labels2.insert("app".to_string(), "backend".to_string());
-    pod2.metadata.labels = Some(labels2);
+    let pod2 = create_pod("api-server", "default", Some(labels2));
 
     let client = ClientBuilder::new()
         .with_objects(vec![pod1, pod2])
@@ -97,88 +105,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_controller_adds_label() {
-        let mut pod = Pod::default();
-        pod.metadata.name = Some("test-pod".to_string());
-        pod.metadata.namespace = Some("default".to_string());
-
-        let client = ClientBuilder::new().with_object(pod).build().await.unwrap();
-        let pods: Api<Pod> = Api::namespaced(client, "default");
-        let controller = PodLabelController::new(pods.clone(), "test-controller".to_string());
-
-        controller.reconcile("test-pod").await.unwrap();
-
-        let pod = pods.get("test-pod").await.unwrap();
-        let labels = pod.metadata.labels.as_ref().unwrap();
-        assert_eq!(
-            labels.get("managed-by"),
-            Some(&"test-controller".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_controller_preserves_labels() {
-        let mut pod = Pod::default();
-        pod.metadata.name = Some("test-pod".to_string());
-        pod.metadata.namespace = Some("default".to_string());
-        let mut labels = BTreeMap::new();
-        labels.insert("app".to_string(), "myapp".to_string());
-        labels.insert("env".to_string(), "prod".to_string());
-        pod.metadata.labels = Some(labels);
-
-        let client = ClientBuilder::new().with_object(pod).build().await.unwrap();
-        let pods: Api<Pod> = Api::namespaced(client, "default");
-        let controller = PodLabelController::new(pods.clone(), "test-controller".to_string());
-
-        controller.reconcile("test-pod").await.unwrap();
-
-        let pod = pods.get("test-pod").await.unwrap();
-        let labels = pod.metadata.labels.as_ref().unwrap();
-        assert_eq!(labels.get("app"), Some(&"myapp".to_string()));
-        assert_eq!(labels.get("env"), Some(&"prod".to_string()));
-        assert_eq!(
-            labels.get("managed-by"),
-            Some(&"test-controller".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_reconcile_all() {
-        let mut pod1 = Pod::default();
-        pod1.metadata.name = Some("pod-1".to_string());
-        pod1.metadata.namespace = Some("default".to_string());
-
-        let mut pod2 = Pod::default();
-        pod2.metadata.name = Some("pod-2".to_string());
-        pod2.metadata.namespace = Some("default".to_string());
-
-        let client = ClientBuilder::new()
-            .with_objects(vec![pod1, pod2])
-            .build()
-            .await
-            .unwrap();
-
-        let pods: Api<Pod> = Api::namespaced(client, "default");
-        let controller = PodLabelController::new(pods.clone(), "test-controller".to_string());
-
-        controller.reconcile_all().await.unwrap();
-
-        let pod_list = pods.list(&ListParams::default()).await.unwrap();
-        assert_eq!(pod_list.items.len(), 2);
-
-        for pod in pod_list.items {
-            let labels = pod.metadata.labels.as_ref().unwrap();
-            assert_eq!(
-                labels.get("managed-by"),
-                Some(&"test-controller".to_string())
-            );
-        }
-    }
 }

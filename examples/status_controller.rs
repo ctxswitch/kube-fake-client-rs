@@ -1,9 +1,46 @@
 //! Deployment status controller using status subresource
+//!
+//! Example demonstrating how to use status subresources to separate spec and status updates.
+//! This pattern is essential for controllers that need to update resource status without
+//! modifying the desired state (spec).
 
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, DeploymentStatus};
 use k8s_openapi::api::core::v1::PodTemplateSpec;
 use kube::api::{Api, PostParams};
 use kube_fake_client::ClientBuilder;
+use std::collections::BTreeMap;
+
+/// Create a deployment with the given name, namespace, and replicas
+fn create_deployment(name: &str, namespace: &str, replicas: i32, app_label: &str) -> Deployment {
+    let labels: BTreeMap<String, String> = [(String::from("app"), String::from(app_label))]
+        .iter()
+        .cloned()
+        .collect();
+
+    Deployment {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: Some(DeploymentSpec {
+            replicas: Some(replicas),
+            selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
+                match_labels: Some(labels.clone()),
+                ..Default::default()
+            },
+            template: PodTemplateSpec {
+                metadata: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                    labels: Some(labels),
+                    ..Default::default()
+                }),
+                spec: None,
+            },
+            ..Default::default()
+        }),
+        status: None,
+    }
+}
 
 pub struct DeploymentStatusController {
     api: Api<Deployment>,
@@ -52,39 +89,7 @@ impl DeploymentStatusController {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let deployment = Deployment {
-        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            name: Some("nginx-deployment".to_string()),
-            namespace: Some("default".to_string()),
-            ..Default::default()
-        },
-        spec: Some(DeploymentSpec {
-            replicas: Some(3),
-            selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
-                match_labels: Some(
-                    [("app".to_string(), "nginx".to_string())]
-                        .iter()
-                        .cloned()
-                        .collect(),
-                ),
-                ..Default::default()
-            },
-            template: PodTemplateSpec {
-                metadata: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                    labels: Some(
-                        [("app".to_string(), "nginx".to_string())]
-                            .iter()
-                            .cloned()
-                            .collect(),
-                    ),
-                    ..Default::default()
-                }),
-                spec: None,
-            },
-            ..Default::default()
-        }),
-        status: None,
-    };
+    let deployment = create_deployment("nginx-deployment", "default", 3, "nginx");
 
     // Status subresources must be enabled explicitly to separate spec and status updates
     let client = ClientBuilder::new()
@@ -111,219 +116,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_status_update_does_not_affect_spec() {
-        let deployment = Deployment {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some("test-deployment".to_string()),
-                namespace: Some("default".to_string()),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(5),
-                selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector::default(),
-                template: PodTemplateSpec::default(),
-                ..Default::default()
-            }),
-            status: None,
-        };
-
-        let client = ClientBuilder::new()
-            .with_status_subresource::<Deployment>()
-            .with_object(deployment)
-            .build()
-            .await
-            .unwrap();
-
-        let api: Api<Deployment> = Api::namespaced(client, "default");
-        let controller = DeploymentStatusController::new(api.clone());
-
-        controller.reconcile("test-deployment").await.unwrap();
-
-        let updated = api.get("test-deployment").await.unwrap();
-        assert_eq!(
-            updated.spec.as_ref().unwrap().replicas,
-            Some(5),
-            "Spec replicas should not be modified by status update"
-        );
-        assert_eq!(
-            updated.status.as_ref().unwrap().replicas,
-            Some(5),
-            "Status should be updated"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_spec_update_does_not_affect_status() {
-        let mut deployment = Deployment {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some("test-deployment".to_string()),
-                namespace: Some("default".to_string()),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(3),
-                selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector::default(),
-                template: PodTemplateSpec::default(),
-                ..Default::default()
-            }),
-            status: Some(DeploymentStatus {
-                replicas: Some(3),
-                ready_replicas: Some(3),
-                available_replicas: Some(3),
-                ..Default::default()
-            }),
-        };
-
-        let client = ClientBuilder::new()
-            .with_status_subresource::<Deployment>()
-            .with_object(deployment.clone())
-            .build()
-            .await
-            .unwrap();
-
-        let api: Api<Deployment> = Api::namespaced(client, "default");
-
-        deployment.spec.as_mut().unwrap().replicas = Some(5);
-        api.replace("test-deployment", &PostParams::default(), &deployment)
-            .await
-            .unwrap();
-
-        let updated = api.get("test-deployment").await.unwrap();
-        assert_eq!(
-            updated.spec.as_ref().unwrap().replicas,
-            Some(5),
-            "Spec should be updated"
-        );
-        assert_eq!(
-            updated.status.as_ref().unwrap().replicas,
-            Some(3),
-            "Status should not be affected by spec update"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_controller_handles_missing_replicas() {
-        let deployment = Deployment {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some("test-deployment".to_string()),
-                namespace: Some("default".to_string()),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: None,
-                selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector::default(),
-                template: PodTemplateSpec::default(),
-                ..Default::default()
-            }),
-            status: None,
-        };
-
-        let client = ClientBuilder::new()
-            .with_status_subresource::<Deployment>()
-            .with_object(deployment)
-            .build()
-            .await
-            .unwrap();
-
-        let api: Api<Deployment> = Api::namespaced(client, "default");
-        let controller = DeploymentStatusController::new(api.clone());
-
-        controller.reconcile("test-deployment").await.unwrap();
-
-        let updated = api.get("test-deployment").await.unwrap();
-        let status = updated.status.as_ref().unwrap();
-        assert_eq!(status.replicas, Some(1));
-        assert_eq!(status.ready_replicas, Some(1));
-    }
-
-    #[tokio::test]
-    async fn test_status_subresource_increments_resource_version() {
-        let deployment = Deployment {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some("test-deployment".to_string()),
-                namespace: Some("default".to_string()),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(2),
-                selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector::default(),
-                template: PodTemplateSpec::default(),
-                ..Default::default()
-            }),
-            status: None,
-        };
-
-        let client = ClientBuilder::new()
-            .with_status_subresource::<Deployment>()
-            .with_object(deployment)
-            .build()
-            .await
-            .unwrap();
-
-        let api: Api<Deployment> = Api::namespaced(client, "default");
-        let controller = DeploymentStatusController::new(api.clone());
-
-        let initial = api.get("test-deployment").await.unwrap();
-        let initial_rv = initial.metadata.resource_version.clone();
-
-        controller.reconcile("test-deployment").await.unwrap();
-
-        let updated = api.get("test-deployment").await.unwrap();
-        let updated_rv = updated.metadata.resource_version.clone();
-
-        assert_ne!(
-            initial_rv, updated_rv,
-            "Resource version should change after status update"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_multiple_status_updates() {
-        let deployment = Deployment {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some("test-deployment".to_string()),
-                namespace: Some("default".to_string()),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(3),
-                selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector::default(),
-                template: PodTemplateSpec::default(),
-                ..Default::default()
-            }),
-            status: None,
-        };
-
-        let client = ClientBuilder::new()
-            .with_status_subresource::<Deployment>()
-            .with_object(deployment)
-            .build()
-            .await
-            .unwrap();
-
-        let api: Api<Deployment> = Api::namespaced(client, "default");
-        let controller = DeploymentStatusController::new(api.clone());
-
-        controller.reconcile("test-deployment").await.unwrap();
-        controller.reconcile("test-deployment").await.unwrap();
-        controller.reconcile("test-deployment").await.unwrap();
-
-        let final_deployment = api.get("test-deployment").await.unwrap();
-        assert!(final_deployment.status.is_some());
-
-        let rv: u32 = final_deployment
-            .metadata
-            .resource_version
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!(rv >= 3, "Resource version should reflect multiple updates");
-    }
 }

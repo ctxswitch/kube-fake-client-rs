@@ -79,17 +79,35 @@ pub fn is_field_immutable(group: &str, version: &str, kind: &str, field_name: &s
 ///     }
 /// }
 /// ```
-pub fn get_immutable_fields(group: &str, version: &str, kind: &str) -> Option<&'static [&'static str]> {
+pub fn get_immutable_fields(
+    group: &str,
+    version: &str,
+    kind: &str,
+) -> Option<&'static [&'static str]> {
     match (group, version, kind) {
-        ("", "v1", "ObjectMeta") => Some(&["creationTimestamp", "generateName", "generation", "name", "namespace", "uid"]),
+        ("", "v1", "ObjectMeta") => Some(&[
+            "creationTimestamp",
+            "generateName",
+            "generation",
+            "name",
+            "namespace",
+            "uid",
+        ]),
         ("", "v1", "PodResourceClaim") => Some(&["resourceClaimTemplateName"]),
         ("", "v1", "PodSpec") => Some(&["resourceClaims"]),
         ("", "v1", "ResourceRequirements") => Some(&["claims"]),
         ("batch", "v1", "JobSpec") => Some(&["backoffLimitPerIndex", "managedBy", "successPolicy"]),
         ("certificates", "v1", "CertificateSigningRequest") => Some(&["spec"]),
-        ("certificates", "v1", "CertificateSigningRequestSpec") => Some(&["extra", "groups", "uid", "username"]),
+        ("certificates", "v1", "CertificateSigningRequestSpec") => {
+            Some(&["extra", "groups", "uid", "username"])
+        }
         ("certificates", "v1", "CertificateSigningRequestStatus") => Some(&["certificate"]),
-        ("certificates", "v1beta1", "PodCertificateRequestStatus") => Some(&["beginRefreshAt", "certificateChain", "notAfter", "notBefore"]),
+        ("certificates", "v1beta1", "PodCertificateRequestStatus") => Some(&[
+            "beginRefreshAt",
+            "certificateChain",
+            "notAfter",
+            "notBefore",
+        ]),
         ("coordination", "v1alpha2", "LeaseCandidateSpec") => Some(&["leaseName"]),
         ("coordination", "v1beta1", "LeaseCandidateSpec") => Some(&["leaseName"]),
         ("discovery", "v1", "EndpointSlice") => Some(&["addressType"]),
@@ -111,7 +129,13 @@ pub fn get_immutable_fields(group: &str, version: &str, kind: &str) -> Option<&'
         ("resource", "v1beta2", "ResourceClaimTemplate") => Some(&["spec"]),
         ("resource", "v1beta2", "ResourcePool") => Some(&["name"]),
         ("resource", "v1beta2", "ResourceSliceSpec") => Some(&["driver", "nodeName"]),
-        ("storage", "v1", "CSIDriverSpec") => Some(&["attachRequired", "fsGroupPolicy", "podInfoOnMount", "storageCapacity", "volumeLifecycleModes"]),
+        ("storage", "v1", "CSIDriverSpec") => Some(&[
+            "attachRequired",
+            "fsGroupPolicy",
+            "podInfoOnMount",
+            "storageCapacity",
+            "volumeLifecycleModes",
+        ]),
         ("storage", "v1", "CSIStorageCapacity") => Some(&["nodeTopology", "storageClassName"]),
         ("storage", "v1", "VolumeAttributesClass") => Some(&["driverName", "parameters"]),
         ("storage", "v1beta1", "VolumeAttributesClass") => Some(&["driverName", "parameters"]),

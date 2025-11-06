@@ -123,7 +123,11 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, crate::Error::Conflict(_)), "Expected Conflict error, got: {:?}", err);
+        assert!(
+            matches!(err, crate::Error::Conflict(_)),
+            "Expected Conflict error, got: {:?}",
+            err
+        );
     }
 
     #[test]

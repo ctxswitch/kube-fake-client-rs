@@ -18,6 +18,26 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Server-managed metadata fields that should not be validated as immutable
+const SERVER_MANAGED_FIELDS: &[&str] = &[
+    "resourceVersion",   // Used for optimistic locking, managed by tracker
+    "generation",        // Incremented by server on spec changes
+    "uid",               // Set by server on create
+    "creationTimestamp", // Set by server on create
+];
+
+/// Standard verbs supported by custom resources
+const STANDARD_CRD_VERBS: &[&str] = &[
+    "create",
+    "get",
+    "list",
+    "update",
+    "patch",
+    "delete",
+    "deletecollection",
+    "watch",
+];
+
 /// Index function that extracts values from an object for indexing
 pub type IndexerFunc = Arc<dyn Fn(&Value) -> Vec<String> + Send + Sync>;
 
@@ -94,17 +114,7 @@ impl FakeClient {
         {
             // CRD registered in registry - allow all standard verbs
             // This matches real Kubernetes behavior where CRDs support standard verbs by default
-            let standard_verbs = [
-                "create",
-                "get",
-                "list",
-                "update",
-                "patch",
-                "delete",
-                "deletecollection",
-                "watch",
-            ];
-            if !standard_verbs.contains(&verb) {
+            if !STANDARD_CRD_VERBS.contains(&verb) {
                 return Err(Error::VerbNotSupported {
                     verb: verb.to_string(),
                     kind: gvk.kind.clone(),
@@ -125,32 +135,13 @@ impl FakeClient {
     /// - Fields under "metadata" are checked against ObjectMeta
     /// - Fields under "spec" are checked against {Kind}Spec
     #[doc(hidden)] // Internal API exposed for testing
-    pub fn validate_immutable_fields(
-        &self,
-        gvk: &GVK,
-        old: &Value,
-        new: &Value,
-    ) -> Result<()> {
+    pub fn validate_immutable_fields(&self, gvk: &GVK, old: &Value, new: &Value) -> Result<()> {
         // Check top-level fields against the resource Kind
-        self.check_immutable_object(
-            &gvk.group,
-            &gvk.version,
-            &gvk.kind,
-            old,
-            new,
-            "",
-        )?;
+        self.check_immutable_object(&gvk.group, &gvk.version, &gvk.kind, old, new, "")?;
 
         // Check metadata fields against ObjectMeta
         if let (Some(old_meta), Some(new_meta)) = (old.get("metadata"), new.get("metadata")) {
-            self.check_immutable_object(
-                "",
-                "v1",
-                "ObjectMeta",
-                old_meta,
-                new_meta,
-                "metadata",
-            )?;
+            self.check_immutable_object("", "v1", "ObjectMeta", old_meta, new_meta, "metadata")?;
         }
 
         // Check spec fields against {Kind}Spec
@@ -185,24 +176,17 @@ impl FakeClient {
             _ => return Ok(()),
         };
 
-        // Server-managed fields that should not be validated as immutable
-        // These are set/updated by the server (tracker) and not controlled by the user
-        let server_managed_fields = [
-            "resourceVersion",  // Used for optimistic locking, managed by tracker
-            "generation",       // Incremented by server on spec changes
-            "uid",              // Set by server on create
-            "creationTimestamp", // Set by server on create
-        ];
-
         // Check each field in the new object
         for (field_name, new_value) in new_obj {
             // Skip metadata and spec at top level (handled separately)
-            if path_prefix.is_empty() && (field_name == "metadata" || field_name == "spec" || field_name == "status") {
+            if path_prefix.is_empty()
+                && (field_name == "metadata" || field_name == "spec" || field_name == "status")
+            {
                 continue;
             }
 
             // Skip server-managed fields - these are handled by the tracker
-            if path_prefix == "metadata" && server_managed_fields.contains(&field_name.as_str()) {
+            if path_prefix == "metadata" && SERVER_MANAGED_FIELDS.contains(&field_name.as_str()) {
                 continue;
             }
 
@@ -302,7 +286,8 @@ impl FakeClient {
             Err(Error::NotFound { .. }) => {
                 // Name not found - check if there's an object with matching UID
                 // This catches attempts to change the name (immutable field)
-                if let Some(uid) = value.get("metadata")
+                if let Some(uid) = value
+                    .get("metadata")
                     .and_then(|m| m.get("uid"))
                     .and_then(|u| u.as_str())
                 {
@@ -311,12 +296,13 @@ impl FakeClient {
                     if all_objects.iter().any(|obj| {
                         obj.get("metadata")
                             .and_then(|m| m.get("uid"))
-                            .and_then(|u| u.as_str()) == Some(uid)
+                            .and_then(|u| u.as_str())
+                            == Some(uid)
                     }) {
                         // Found object with matching UID but different name
                         // This is an attempt to change the name (immutable)
                         return Err(Error::ImmutableField {
-                            field: "metadata.name".to_string()
+                            field: "metadata.name".to_string(),
                         });
                     }
                 }
@@ -529,9 +515,7 @@ impl FakeClient {
             validator.validate(&gvk.group, &gvk.version, &gvk.kind, &patched)?;
         }
 
-        let updated = self
-            .tracker
-            .update(&gvr, &gvk, patched, namespace, false)?;
+        let updated = self.tracker.update(&gvr, &gvk, patched, namespace, false)?;
 
         let mut result: K = serde_json::from_value(updated)?;
 
