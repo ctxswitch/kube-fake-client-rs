@@ -21,26 +21,36 @@ jobs:
           # Stable Rust - all k8s-openapi versions
           - rust: stable
             features: v1_30
+            cache_key: v1_30
           - rust: stable
             features: v1_31
+            cache_key: v1_31
           - rust: stable
             features: v1_32
+            cache_key: v1_32
           - rust: stable
             features: v1_33
+            cache_key: v1_33
           # Stable Rust - all k8s-openapi versions with validation
           - rust: stable
             features: v1_30,validation
+            cache_key: v1_30-validation
           - rust: stable
             features: v1_31,validation
+            cache_key: v1_31-validation
           - rust: stable
             features: v1_32,validation
+            cache_key: v1_32-validation
           - rust: stable
             features: v1_33,validation
+            cache_key: v1_33-validation
           # Nightly Rust - v1_32 only
           - rust: nightly
             features: v1_32
+            cache_key: v1_32
           - rust: nightly
             features: v1_32,validation
+            cache_key: v1_32-validation
     steps:
       - uses: actions/checkout@v5
 
@@ -69,9 +79,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ubuntu-${{ matrix.rust }}-${{ matrix.features }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-${{ matrix.rust }}-${{ matrix.cache_key }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ubuntu-${{ matrix.rust }}-${{ matrix.features }}-cargo-build-target-
+            ubuntu-${{ matrix.rust }}-${{ matrix.cache_key }}-cargo-build-target-
 
       - name: check
         run: cargo check --all-targets --no-default-features --features ${{ matrix.features }}
