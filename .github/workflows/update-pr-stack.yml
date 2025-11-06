@@ -1,4 +1,4 @@
-name: Update PR Stack Info
+name: update pr stack info
 
 on:
   pull_request:
@@ -14,18 +14,18 @@ jobs:
   update-stack:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0  # Fetch all history for all branches
 
-      - name: Setup Git Town
+      - name: setup git town
         run: |
           curl -L https://github.com/git-town/git-town/releases/latest/download/git-town-linux-amd64 -o git-town
           chmod +x git-town
           sudo mv git-town /usr/local/bin/
 
-      - name: Get branch information
+      - name: get branch information
         id: branch-info
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,7 +42,7 @@ jobs:
             echo "manual=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Find stack relationships
+      - name: find stack relationships
         id: find-stack
         env:
           GH_TOKEN: ${{ github.token }}
@@ -118,7 +118,7 @@ jobs:
             echo "is_stack=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Update PR description
+      - name: update pr description
         if: steps.find-stack.outputs.is_stack == 'true' && steps.branch-info.outputs.manual == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -167,7 +167,7 @@ jobs:
 
           echo "✅ Updated PR #$PR_NUMBER with stack information"
 
-      - name: Update all stacked PRs
+      - name: update all stacked prs
         if: steps.branch-info.outputs.manual == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -183,7 +183,7 @@ jobs:
 
           echo "✅ Triggered stack updates for all open PRs"
 
-      - name: Comment on PR
+      - name: comment on pr
         if: steps.find-stack.outputs.is_stack == 'true' && steps.branch-info.outputs.manual == 'false'
         env:
           GH_TOKEN: ${{ github.token }}

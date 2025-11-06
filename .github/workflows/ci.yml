@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on:
   push:
@@ -12,155 +12,178 @@ env:
 
 jobs:
   test:
-    name: Test
-    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.rust }}, ${{ matrix.features }})
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, beta]
+        include:
+          # Stable Rust - all k8s-openapi versions
+          - rust: stable
+            features: v1_30
+          - rust: stable
+            features: v1_31
+          - rust: stable
+            features: v1_32
+          - rust: stable
+            features: v1_33
+          # Stable Rust - all k8s-openapi versions with validation
+          - rust: stable
+            features: v1_30,validation
+          - rust: stable
+            features: v1_31,validation
+          - rust: stable
+            features: v1_32,validation
+          - rust: stable
+            features: v1_33,validation
+          # Nightly Rust - v1_32 only
+          - rust: nightly
+            features: v1_32
+          - rust: nightly
+            features: v1_32,validation
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
+      - name: install rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
 
-      - name: Cache cargo registry
+      - name: cache cargo registry
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ubuntu-cargo-registry-
 
-      - name: Cache cargo index
+      - name: cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-index-
+            ubuntu-cargo-index-
 
-      - name: Cache cargo build
+      - name: cache cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-${{ matrix.rust }}-${{ matrix.features }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+            ubuntu-${{ matrix.rust }}-${{ matrix.features }}-cargo-build-target-
 
-      - name: Check
-        run: cargo check --all-targets
+      - name: check
+        run: cargo check --all-targets --no-default-features --features ${{ matrix.features }}
 
-      - name: Run tests
-        run: cargo test --verbose
+      - name: run tests
+        run: cargo test --verbose --no-default-features --features ${{ matrix.features }}
 
-      - name: Run doc tests
-        run: cargo test --doc
+      - name: run doc tests
+        run: cargo test --doc --no-default-features --features ${{ matrix.features }}
 
   lint:
-    name: Lint
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
+      - name: install rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
+      - name: cache cargo registry
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ubuntu-cargo-registry-
 
-      - name: Cache cargo index
+      - name: cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-index-
+            ubuntu-cargo-index-
 
-      - name: Cache cargo build
+      - name: cache cargo build
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-target-
+            ubuntu-cargo-build-target-
 
-      - name: Check formatting
+      - name: check formatting
         run: cargo fmt -- --check
 
-      - name: Run clippy
+      - name: run clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
 
   coverage:
-    name: Code Coverage
+    name: code coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
+      - name: install rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install tarpaulin
+      - name: install tarpaulin
         run: cargo install cargo-tarpaulin
 
-      - name: Generate coverage
-        run: cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+      - name: generate coverage (with validation)
+        run: cargo tarpaulin --verbose --no-default-features --features v1_32,validation --workspace --timeout 120 --out xml
 
-      - name: Upload coverage to Codecov
+      - name: upload coverage to codecov
         uses: codecov/codecov-action@v5
         with:
           file: ./cobertura.xml
           fail_ci_if_error: false
 
   security:
-    name: Security Audit
+    name: security audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
+      - name: install rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo audit
+      - name: run cargo audit
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   docs:
-    name: Documentation
+    name: documentation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
+      - name: install rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
+      - name: cache cargo registry
         uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+            ubuntu-cargo-registry-
 
-      - name: Cache cargo index
+      - name: cache cargo index
         uses: actions/cache@v4
         with:
           path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-index-
+            ubuntu-cargo-index-
 
-      - name: Check documentation
+      - name: check documentation (default features)
         run: cargo doc --no-deps --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
