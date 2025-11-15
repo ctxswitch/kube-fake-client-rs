@@ -1,8 +1,6 @@
 name: dependabot auto-merge
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   workflow_run:
     workflows: ["CI"]
     types: [completed]
@@ -14,7 +12,7 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.actor.login == 'dependabot[bot]'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,13 +24,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Get PR number
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            PR_NUMBER="${{ github.event.pull_request.number }}"
-          else
-            # For workflow_run events, get PR from the head branch
-            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
-          fi
+          # Get PR number from the workflow_run event
+          PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
 
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
 
@@ -41,10 +34,7 @@ jobs:
             exit 0
           fi
 
-          # Check if all checks have passed
-          gh pr checks "$PR_NUMBER" --repo "${{ github.repository }}" --watch --interval 30
-
-          # Get PR details
+          # Get PR details (CI already passed since workflow_run succeeded)
           PR_DATA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json title,mergeable,mergeStateStatus)
           PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
           MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable')
