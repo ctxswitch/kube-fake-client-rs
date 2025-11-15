@@ -90,4 +90,4 @@ validation = []  # Enable OpenAPI schema validation with automatic lazy loading
 
 [dev-dependencies]
 tokio-test = "0.4"
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.7", features = ["async_tokio"] }
