@@ -16,7 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: ci-check
         id: ci-check
@@ -28,7 +31,7 @@ jobs:
             PR_NUMBER="${{ github.event.pull_request.number }}"
           else
             # For workflow_run events, get PR from the head branch
-            PR_NUMBER=$(gh pr list --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
+            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" --head "${{ github.event.workflow_run.head_branch }}" --json number --jq '.[0].number')
           fi
 
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
@@ -39,10 +42,10 @@ jobs:
           fi
 
           # Check if all checks have passed
-          gh pr checks "$PR_NUMBER" --watch --interval 30
+          gh pr checks "$PR_NUMBER" --repo "${{ github.repository }}" --watch --interval 30
 
           # Get PR details
-          PR_DATA=$(gh pr view "$PR_NUMBER" --json title,mergeable,mergeStateStatus)
+          PR_DATA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json title,mergeable,mergeStateStatus)
           PR_TITLE=$(echo "$PR_DATA" | jq -r '.title')
           MERGEABLE=$(echo "$PR_DATA" | jq -r '.mergeable')
           MERGE_STATE=$(echo "$PR_DATA" | jq -r '.mergeStateStatus')
@@ -61,6 +64,7 @@ jobs:
 
           # Merge the PR using the title as commit message
           gh pr merge "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
             --squash \
             --subject "$PR_TITLE" \
             --auto
