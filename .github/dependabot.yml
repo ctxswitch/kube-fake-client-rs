@@ -14,11 +14,11 @@ updates:
       include: "scope"
     ignore:
       - dependency-name: "kube"
-        # Allow updates to 1.x, but block 2.x due to edition2024 compatibility issues
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-patch"]
       - dependency-name: "schemars"
-        # Pin to 0.x, block updates to 1.x
-        update-types: ["version-update:semver-major"]
+        update-types: ["version-update:semver-patch"]
+      - dependency-name: "jsonschema"
+        update-types: ["version-update:semver-patch"]
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
