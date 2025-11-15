@@ -14,11 +14,13 @@ updates:
       include: "scope"
     ignore:
       - dependency-name: "kube"
-        update-types: ["version-update:semver-patch"]
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "schemars"
-        update-types: ["version-update:semver-patch"]
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "jsonschema"
-        update-types: ["version-update:semver-patch"]
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "k8s-openapi"
+        update-types: [ "version-update:semver-minor", "version-update:semver-major", "version-update:semver-patch" ]
 
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
