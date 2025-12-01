@@ -15,7 +15,7 @@ pub trait SchemaValidator: Send + Sync {
 #[cfg(feature = "validation")]
 mod runtime_openapi_validator {
     use super::*;
-    use jsonschema::JSONSchema;
+    use jsonschema::Validator;
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
@@ -30,7 +30,7 @@ mod runtime_openapi_validator {
         /// Parsed OpenAPI definitions
         definitions: HashMap<String, Value>,
         /// Compiled schemas for registered GVKs (gvk_key -> schema)
-        schemas: RwLock<HashMap<String, JSONSchema>>,
+        schemas: RwLock<HashMap<String, Validator>>,
         /// Set of GVK keys that should be validated
         enabled_gvks: RwLock<Vec<String>>,
     }
@@ -139,7 +139,7 @@ mod runtime_openapi_validator {
                 "$ref": format!("#/definitions/{}", definition_name)
             });
 
-            let compiled = JSONSchema::compile(&schema).map_err(|e| {
+            let compiled = jsonschema::validator_for(&schema).map_err(|e| {
                 Error::Internal(format!("Failed to compile schema for '{}': {}", gvk_key, e))
             })?;
 
@@ -178,13 +178,12 @@ mod runtime_openapi_validator {
                 .map_err(|e| Error::Internal(format!("Failed to acquire read lock: {}", e)))?;
 
             if let Some(schema) = schemas.get(&gvk_key) {
-                let result = schema.validate(value);
+                let errors: Vec<String> = schema
+                    .iter_errors(value)
+                    .map(|e| format!("{}: {}", e.instance_path(), e))
+                    .collect();
 
-                if let Err(validation_errors) = result {
-                    let errors: Vec<String> = validation_errors
-                        .map(|e| format!("{}: {}", e.instance_path, e))
-                        .collect();
-
+                if !errors.is_empty() {
                     return Err(Error::ValidationFailed {
                         kind: kind.to_string(),
                         errors,
