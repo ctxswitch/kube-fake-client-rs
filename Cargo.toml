@@ -60,7 +60,7 @@ thiserror = "2.0"
 async-trait = "0.1"
 json-patch = "4.0"
 tracing = "0.1"
-uuid = { version = "1.19", features = ["v4"] }
+uuid = { version = "1.21", features = ["v4"] }
 chrono = "0.4"
 rand = "0.9"
 tower = "0.5"
