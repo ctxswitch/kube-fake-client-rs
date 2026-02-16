@@ -62,7 +62,7 @@ json-patch = "4.0"
 tracing = "0.1"
 uuid = { version = "1.21", features = ["v4"] }
 chrono = "0.4"
-rand = "0.9"
+rand = "0.10"
 tower = "0.5"
 http = "1.4"
 http-body-util = "0.1"
