@@ -20,9 +20,6 @@ jobs:
         include:
           # Stable Rust - all k8s-openapi versions
           - rust: stable
-            features: v1_30
-            cache_key: v1_30
-          - rust: stable
             features: v1_31
             cache_key: v1_31
           - rust: stable
@@ -31,10 +28,13 @@ jobs:
           - rust: stable
             features: v1_33
             cache_key: v1_33
-          # Stable Rust - all k8s-openapi versions with validation
           - rust: stable
-            features: v1_30,validation
-            cache_key: v1_30-validation
+            features: v1_34
+            cache_key: v1_34
+          - rust: stable
+            features: v1_35
+            cache_key: v1_35
+          # Stable Rust - all k8s-openapi versions with validation
           - rust: stable
             features: v1_31,validation
             cache_key: v1_31-validation
@@ -44,13 +44,19 @@ jobs:
           - rust: stable
             features: v1_33,validation
             cache_key: v1_33-validation
-          # Nightly Rust - v1_32 only
+          - rust: stable
+            features: v1_34,validation
+            cache_key: v1_34-validation
+          - rust: stable
+            features: v1_35,validation
+            cache_key: v1_35-validation
+          # Nightly Rust - v1_35 only
           - rust: nightly
-            features: v1_32
-            cache_key: v1_32
+            features: v1_35
+            cache_key: v1_35
           - rust: nightly
-            features: v1_32,validation
-            cache_key: v1_32-validation
+            features: v1_35,validation
+            cache_key: v1_35-validation
     steps:
       - uses: actions/checkout@v6
 
@@ -146,7 +152,7 @@ jobs:
         run: cargo install cargo-tarpaulin
 
       - name: generate coverage (with validation)
-        run: cargo tarpaulin --verbose --no-default-features --features v1_32,validation --workspace --timeout 120 --out xml
+        run: cargo tarpaulin --verbose --no-default-features --features v1_35,validation --workspace --timeout 120 --out xml
 
       - name: upload coverage to codecov
         uses: codecov/codecov-action@v5

@@ -804,10 +804,15 @@ impl MockService {
             let status_code = StatusCode::from_u16(error_response.code)
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
+            let status_str = match error_response.status {
+                Some(kube::core::response::StatusSummary::Success) => "Success",
+                Some(kube::core::response::StatusSummary::Failure) | None => "Failure",
+            };
+
             let body = serde_json::json!({
                 "kind": "Status",
                 "apiVersion": "v1",
-                "status": error_response.status,
+                "status": status_str,
                 "message": error_response.message,
                 "reason": error_response.reason,
                 "code": error_response.code

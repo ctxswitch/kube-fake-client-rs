@@ -1,4 +1,5 @@
-use kube::error::ErrorResponse;
+use kube::core::response::StatusSummary;
+use kube::core::Status;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -65,53 +66,70 @@ impl Error {
     pub fn into_kube_err(self) -> kube::Error {
         let error_response = match &self {
             // Format: 'pods "my-pod" not found'
-            Error::NotFound { kind, name, .. } => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::NotFound { kind, name, .. } => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!("{kind} \"{name}\" not found"),
                 reason: "NotFound".to_string(),
                 code: 404,
+                metadata: None,
+                details: None,
             },
             // Format: 'pods "my-pod" already exists'
-            Error::AlreadyExists { kind, name, .. } => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::AlreadyExists { kind, name, .. } => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!("{kind} \"{name}\" already exists"),
                 reason: "AlreadyExists".to_string(),
                 code: 409,
+                metadata: None,
+                details: None,
             },
-            Error::Conflict(msg)
-            | Error::InvalidRequest(msg)
-            | Error::MetadataError(msg)
-            | Error::Internal(msg) => {
-                let (reason, code) = match self {
-                    Error::Conflict(_) => ("Conflict", 409),
-                    Error::InvalidRequest(_) | Error::MetadataError(_) => ("Invalid", 422),
-                    Error::Internal(_) => ("InternalError", 500),
-                    _ => unreachable!(),
-                };
-                ErrorResponse {
-                    status: "Failure".to_string(),
-                    message: msg.clone(),
-                    reason: reason.to_string(),
-                    code,
-                }
-            }
-            Error::IndexNotFound { kind, field } => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::Conflict(msg) => Status {
+                status: Some(StatusSummary::Failure),
+                message: msg.clone(),
+                reason: "Conflict".to_string(),
+                code: 409,
+                metadata: None,
+                details: None,
+            },
+            Error::InvalidRequest(msg) | Error::MetadataError(msg) => Status {
+                status: Some(StatusSummary::Failure),
+                message: msg.clone(),
+                reason: "Invalid".to_string(),
+                code: 422,
+                metadata: None,
+                details: None,
+            },
+            Error::Internal(msg) => Status {
+                status: Some(StatusSummary::Failure),
+                message: msg.clone(),
+                reason: "InternalError".to_string(),
+                code: 500,
+                metadata: None,
+                details: None,
+            },
+            Error::IndexNotFound { kind, field } => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!("field selector {field} not supported for {kind}"),
                 reason: "BadRequest".to_string(),
                 code: 400,
+                metadata: None,
+                details: None,
             },
-            Error::SerializationError(e) => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::SerializationError(e) => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!("Serialization error: {e}"),
                 reason: "BadRequest".to_string(),
                 code: 400,
+                metadata: None,
+                details: None,
             },
-            Error::PatchError(e) => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::PatchError(e) => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!("Patch error: {e}"),
                 reason: "Invalid".to_string(),
                 code: 422,
+                metadata: None,
+                details: None,
             },
             Error::ResourceNotRegistered {
                 group,
@@ -123,38 +141,46 @@ impl Error {
                 } else {
                     format!("{group}/")
                 };
-                ErrorResponse {
-                    status: "Failure".to_string(),
+                Status {
+                    status: Some(StatusSummary::Failure),
                     message: format!("the server could not find the requested resource ({group_prefix}{resource})"),
                     reason: "NotFound".to_string(),
                     code: 404,
+                    metadata: None,
+                    details: None,
                 }
             }
-            Error::VerbNotSupported { verb, kind } => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::VerbNotSupported { verb, kind } => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!(
                     "{kind} \"{kind}\" is forbidden: verb \"{verb}\" is not supported"
                 ),
                 reason: "MethodNotAllowed".to_string(),
                 code: 405,
+                metadata: None,
+                details: None,
             },
             Error::ValidationFailed { kind, errors } => {
                 let errors_str = errors.join(", ");
-                ErrorResponse {
-                    status: "Failure".to_string(),
+                Status {
+                    status: Some(StatusSummary::Failure),
                     message: format!("{kind} failed schema validation: {errors_str}"),
                     reason: "Invalid".to_string(),
                     code: 422,
+                    metadata: None,
+                    details: None,
                 }
             }
-            Error::ImmutableField { field } => ErrorResponse {
-                status: "Failure".to_string(),
+            Error::ImmutableField { field } => Status {
+                status: Some(StatusSummary::Failure),
                 message: format!("field is immutable: {field}"),
                 reason: "Invalid".to_string(),
                 code: 422,
+                metadata: None,
+                details: None,
             },
         };
 
-        kube::Error::Api(error_response)
+        kube::Error::Api(Box::new(error_response))
     }
 }
