@@ -452,7 +452,14 @@ impl ClientBuilder {
                 if !metadata.contains_key("creationTimestamp") {
                     metadata.insert(
                         "creationTimestamp".to_string(),
-                        serde_json::to_value(chrono::Utc::now().to_rfc3339()).unwrap(),
+                        serde_json::to_value(
+                            jiff::fmt::strtime::format(
+                                "%Y-%m-%dT%H:%M:%SZ",
+                                jiff::Timestamp::now(),
+                            )
+                            .expect("failed to format timestamp"),
+                        )
+                        .expect("failed to serialize timestamp"),
                     );
                 }
 

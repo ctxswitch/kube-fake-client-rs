@@ -60,41 +60,36 @@ impl DeploymentStatusController {
             .and_then(|spec| spec.replicas)
             .unwrap_or(1);
 
-        // Build the status reflecting the current desired state
-        #[cfg(not(feature = "v1_33"))]
-        let status = DeploymentStatus {
-            replicas: Some(desired_replicas),
-            ready_replicas: Some(desired_replicas),
-            available_replicas: Some(desired_replicas),
-            unavailable_replicas: Some(0),
-            updated_replicas: Some(desired_replicas),
-            observed_generation: deployment.metadata.generation,
-            conditions: None,
-            collision_count: None,
-        };
-
-        #[cfg(feature = "v1_33")]
-        let status = DeploymentStatus {
-            replicas: Some(desired_replicas),
-            ready_replicas: Some(desired_replicas),
-            available_replicas: Some(desired_replicas),
-            unavailable_replicas: Some(0),
-            updated_replicas: Some(desired_replicas),
-            observed_generation: deployment.metadata.generation,
-            conditions: None,
-            collision_count: None,
-            terminating_replicas: None,
-        };
+        // DeploymentStatus gained `terminating_replicas` in v1_33
+        k8s_openapi::k8s_if_le_1_32! {
+            let status = DeploymentStatus {
+                replicas: Some(desired_replicas),
+                ready_replicas: Some(desired_replicas),
+                available_replicas: Some(desired_replicas),
+                unavailable_replicas: Some(0),
+                updated_replicas: Some(desired_replicas),
+                observed_generation: deployment.metadata.generation,
+                ..Default::default()
+            };
+        }
+        k8s_openapi::k8s_if_ge_1_33! {
+            let status = DeploymentStatus {
+                replicas: Some(desired_replicas),
+                ready_replicas: Some(desired_replicas),
+                available_replicas: Some(desired_replicas),
+                unavailable_replicas: Some(0),
+                updated_replicas: Some(desired_replicas),
+                observed_generation: deployment.metadata.generation,
+                terminating_replicas: None,
+                ..Default::default()
+            };
+        }
 
         deployment.status = Some(status);
 
         // replace_status updates only the status subresource, leaving spec unchanged
         self.api
-            .replace_status(
-                name,
-                &PostParams::default(),
-                serde_json::to_vec(&deployment)?,
-            )
+            .replace_status(name, &PostParams::default(), &deployment)
             .await?;
 
         Ok(())

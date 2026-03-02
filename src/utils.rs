@@ -18,7 +18,7 @@ pub fn ensure_metadata(meta: &mut ObjectMeta, namespace: &str) {
     }
     if meta.creation_timestamp.is_none() {
         meta.creation_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-            chrono::Utc::now(),
+            jiff::Timestamp::now(),
         ));
     }
     if meta.uid.is_none() {
