@@ -1,4 +1,4 @@
-.PHONY: help build test check clippy fmt clean doc pre-publish publish-dry publish install dev
+.PHONY: help build test check clippy fmt clean doc pre-publish publish-dry publish install dev generate
 
 .DEFAULT_GOAL := help
 
@@ -101,6 +101,11 @@ changelog-tag: ## Generate changelog for the current version tag
 	command -v git-cliff >/dev/null 2>&1 || { echo "Installing git-cliff..."; cargo install git-cliff; }; \
 	git-cliff --latest --tag "v$$VERSION" --output RELEASE_NOTES.md; \
 	echo "✓ Generated RELEASE_NOTES.md for v$$VERSION"
+
+generate: ## Run code generators (discovery + immutable)
+	cargo run --bin discovery-gen
+	cargo run --bin immutable-gen
+	cargo fmt
 
 bench: ## Run benchmarks
 	cargo bench
