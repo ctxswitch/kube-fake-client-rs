@@ -3,6 +3,7 @@
 [![CI](https://github.com/ctxswitch/kube-fake-client-rs/workflows/CI/badge.svg)](https://github.com/ctxswitch/kube-fake-client-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/kube-fake-client.svg)](https://crates.io/crates/kube-fake-client)
 [![Documentation](https://docs.rs/kube-fake-client/badge.svg)](https://docs.rs/kube-fake-client)
+[![codecov](https://codecov.io/gh/ctxswitch/kube-fake-client-rs/graph/badge.svg)](https://app.codecov.io/gh/ctxswitch/kube-fake-client-rs)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 In-memory Kubernetes client for testing controllers and operators in Rust. Inspired by [controller-runtime's fake client](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/client/fake) from the Go ecosystem, this library provides a full-featured test client that mimics Kubernetes API behavior without requiring an actual cluster.

@@ -157,6 +157,7 @@ jobs:
       - name: upload coverage to codecov
         uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           file: ./cobertura.xml
           fail_ci_if_error: false
 
