@@ -442,35 +442,9 @@ impl ClientBuilder {
 
         use serde::Deserialize;
         for document in serde_yaml::Deserializer::from_str(&content) {
-            let mut value = Value::deserialize(document).map_err(|e| {
+            let value = Value::deserialize(document).map_err(|e| {
                 Error::Internal(format!("Failed to parse YAML in {:?}: {}", fixture_path, e))
             })?;
-
-            // Set default metadata if not present
-            if let Some(metadata) = value.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-                // Set creation timestamp if not already set
-                if !metadata.contains_key("creationTimestamp") {
-                    metadata.insert(
-                        "creationTimestamp".to_string(),
-                        serde_json::to_value(
-                            jiff::fmt::strtime::format(
-                                "%Y-%m-%dT%H:%M:%SZ",
-                                jiff::Timestamp::now(),
-                            )
-                            .expect("failed to format timestamp"),
-                        )
-                        .expect("failed to serialize timestamp"),
-                    );
-                }
-
-                // Set namespace to default if not specified
-                if !metadata.contains_key("namespace") {
-                    metadata.insert(
-                        "namespace".to_string(),
-                        Value::String("default".to_string()),
-                    );
-                }
-            }
 
             self.initial_objects.push(value);
         }
@@ -612,12 +586,14 @@ impl ClientBuilder {
             }
         };
 
+        let registry = Arc::new(self.registry);
+
         let fake_client = FakeClient {
-            tracker: Arc::new(crate::tracker::ObjectTracker::new()),
+            tracker: Arc::new(crate::tracker::ObjectTracker::new(Arc::clone(&registry))),
             indexes: Arc::new(std::sync::RwLock::new(self.indexes)),
             return_managed_fields: self.return_managed_fields,
             interceptors: self.interceptors.map(Arc::new),
-            registry: Arc::new(self.registry),
+            registry,
             validator,
         };
 
@@ -631,7 +607,7 @@ impl ClientBuilder {
         for obj in self.initial_objects {
             let gvk = extract_gvk(&obj)?;
             let gvr = gvk_to_gvr(&gvk, &fake_client.registry)?;
-            let namespace = extract_namespace(&obj);
+            let namespace = extract_namespace(&obj, &gvk, &fake_client.registry);
 
             fake_client
                 .tracker
@@ -666,11 +642,28 @@ fn gvk_to_gvr(gvk: &GVK, registry: &ResourceRegistry) -> Result<GVR> {
     })
 }
 
-/// Extract namespace from object metadata
-fn extract_namespace(obj: &Value) -> String {
-    obj.get("metadata")
+/// Extract namespace from object metadata, respecting resource scope
+///
+/// If the object has an explicit namespace in metadata, returns it.
+/// If the resource is cluster-scoped (per Discovery or Registry), returns `""`.
+/// Otherwise defaults to `"default"` for namespaced resources without a namespace.
+fn extract_namespace(obj: &Value, gvk: &GVK, registry: &ResourceRegistry) -> String {
+    // If metadata has an explicit namespace, use it
+    if let Some(ns) = obj
+        .get("metadata")
         .and_then(|m| m.get("namespace"))
         .and_then(|n| n.as_str())
-        .unwrap_or("default")
-        .to_string()
+    {
+        return ns.to_string();
+    }
+
+    // No namespace in metadata — check if the resource is cluster-scoped
+    let is_namespaced = Discovery::is_namespaced(gvk)
+        .or_else(|| registry.is_namespaced(&gvk.group, &gvk.version, &gvk.kind));
+
+    if is_namespaced == Some(false) {
+        return String::new();
+    }
+
+    "default".to_string()
 }

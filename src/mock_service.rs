@@ -360,7 +360,10 @@ impl MockService {
                 self.handle_patch(&path, body_bytes, content_type.as_deref())
                     .await
             }
-            "DELETE" => self.handle_delete(&path, query.as_deref()).await,
+            "DELETE" => {
+                self.handle_delete(&path, query.as_deref(), body_bytes)
+                    .await
+            }
             _ => Self::error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
         }
     }
@@ -702,6 +705,7 @@ impl MockService {
         &self,
         path: &str,
         query: Option<&str>,
+        body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let namespace = Self::extract_namespace(&parsed);
@@ -725,6 +729,25 @@ impl MockService {
 
         handle_error!(self.client.validate_verb(&gvk, "delete"));
 
+        let cascade = if !body.is_empty() {
+            // Malformed or missing delete options default to cascade=true,
+            // matching Kubernetes API server default behaviour.
+            let delete_opts: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            if let Some(policy) = delete_opts
+                .get("propagationPolicy")
+                .and_then(|v| v.as_str())
+            {
+                policy != "Orphan"
+            } else {
+                delete_opts
+                    .get("orphanDependents")
+                    .and_then(|v| v.as_bool())
+                    != Some(true)
+            }
+        } else {
+            true
+        };
+
         if let Some(name) = parsed.name {
             // Single object deletion
             let deleted = if let Some(ref interceptors) = self.client.interceptors {
@@ -733,20 +756,30 @@ impl MockService {
                         client: &self.client,
                         namespace: &namespace,
                         name: &name,
+                        cascade,
                     };
 
                     match delete_interceptor(ctx) {
                         Ok(Some(result)) => result,
                         Ok(None) => {
-                            handle_error!(self.client.tracker().delete(&gvr, &namespace, &name))
+                            handle_error!(self
+                                .client
+                                .tracker()
+                                .delete(&gvr, &namespace, &name, cascade))
                         }
                         Err(e) => return Self::error_to_response(e),
                     }
                 } else {
-                    handle_error!(self.client.tracker().delete(&gvr, &namespace, &name))
+                    handle_error!(self
+                        .client
+                        .tracker()
+                        .delete(&gvr, &namespace, &name, cascade))
                 }
             } else {
-                handle_error!(self.client.tracker().delete(&gvr, &namespace, &name))
+                handle_error!(self
+                    .client
+                    .tracker()
+                    .delete(&gvr, &namespace, &name, cascade))
             };
 
             Self::success_response(deleted)
@@ -774,7 +807,7 @@ impl MockService {
                 .filter(|obj_name| {
                     self.client
                         .tracker()
-                        .delete(&gvr, &namespace, obj_name)
+                        .delete(&gvr, &namespace, obj_name, cascade)
                         .is_ok()
                 })
                 .count();
