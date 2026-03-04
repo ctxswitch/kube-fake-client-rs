@@ -7,7 +7,7 @@ mod tests {
     use crate::ClientBuilder;
     use k8s_openapi::api::core::v1::{Node, Pod};
     use k8s_openapi::api::rbac::v1::ClusterRole;
-    use kube::api::{Patch, PatchParams, PostParams};
+    use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
     use serde_json::json;
 
     // ============================================================================
@@ -1251,5 +1251,43 @@ mod tests {
         let list = pods.list(&kube::api::ListParams::default()).await.unwrap();
         assert_eq!(list.items.len(), 1);
         assert_eq!(list.items[0].metadata.name, Some("test-pod".to_string()));
+    }
+
+    // ============================================================================
+    // Cascading Deletion via Owner References Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_delete_cascades_owner_references() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create the owner pod
+        let mut owner = Pod::default();
+        owner.metadata.name = Some("owner-pod".to_string());
+        let created = pods.create(&PostParams::default(), &owner).await.unwrap();
+        let owner_uid = created.metadata.uid.unwrap();
+
+        // Create a child pod with ownerReferences pointing to the owner
+        let mut child = Pod::default();
+        child.metadata.name = Some("child-pod".to_string());
+        child.metadata.owner_references = Some(vec![
+            k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                api_version: "v1".to_string(),
+                kind: "Pod".to_string(),
+                name: "owner-pod".to_string(),
+                uid: owner_uid.clone(),
+                ..Default::default()
+            },
+        ]);
+        pods.create(&PostParams::default(), &child).await.unwrap();
+
+        // Delete the owner
+        pods.delete("owner-pod", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        // Child should be gone via cascading deletion
+        assert!(pods.get("child-pod").await.is_err());
     }
 }

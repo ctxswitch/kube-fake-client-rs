@@ -1,3 +1,5 @@
+use crate::discovery::Discovery;
+use crate::registry::ResourceRegistry;
 use crate::utils::{
     deletion_timestamp_equal, ensure_metadata, increment_generation, should_be_deleted,
 };
@@ -5,7 +7,7 @@ use crate::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
@@ -77,14 +79,16 @@ pub struct ObjectTracker {
     objects: Arc<RwLock<ObjectStorage>>,
     with_status_subresource: Arc<RwLock<std::collections::HashSet<GVK>>>,
     resource_version: Arc<AtomicU64>,
+    registry: Arc<ResourceRegistry>,
 }
 
 impl ObjectTracker {
-    pub fn new() -> Self {
+    pub fn new(registry: Arc<ResourceRegistry>) -> Self {
         Self {
             objects: Arc::new(RwLock::new(HashMap::new())),
             with_status_subresource: Arc::new(RwLock::new(std::collections::HashSet::new())),
             resource_version: Arc::new(AtomicU64::new(0)),
+            registry,
         }
     }
 
@@ -105,6 +109,30 @@ impl ObjectTracker {
             .read()
             .expect("lock poisoned")
             .contains(gvk)
+    }
+
+    /// Validate that namespace usage matches the resource's scope.
+    ///
+    /// Returns an error if a namespaced resource is used without a namespace,
+    /// or if a cluster-scoped resource is used with a namespace. Unknown
+    /// resources (not in Discovery or the registry) pass validation.
+    fn validate_namespace_scope(&self, gvk: &GVK, namespace: &str) -> Result<()> {
+        let is_namespaced = Discovery::is_namespaced(gvk).or_else(|| {
+            self.registry
+                .is_namespaced(&gvk.group, &gvk.version, &gvk.kind)
+        });
+
+        match is_namespaced {
+            Some(true) if namespace.is_empty() => Err(Error::InvalidRequest(format!(
+                "namespaced resource {}/{} {} requires a namespace",
+                gvk.group, gvk.version, gvk.kind
+            ))),
+            Some(false) if !namespace.is_empty() => Err(Error::InvalidRequest(format!(
+                "cluster-scoped resource {}/{} {} cannot have a namespace",
+                gvk.group, gvk.version, gvk.kind
+            ))),
+            _ => Ok(()),
+        }
     }
 
     /// Auto-register status subresource if object has a status field
@@ -142,6 +170,7 @@ impl ObjectTracker {
 
     pub fn add(&self, gvr: &GVR, gvk: &GVK, mut object: Value, namespace: &str) -> Result<Value> {
         trace!("Adding object: {:?} in namespace: {}", gvr, namespace);
+        self.validate_namespace_scope(gvk, namespace)?;
 
         let mut meta = self.extract_metadata(&object)?;
         let name = Self::extract_name(&meta)?;
@@ -189,6 +218,7 @@ impl ObjectTracker {
         namespace: &str,
     ) -> Result<Value> {
         trace!("Creating object: {:?} in namespace: {}", gvr, namespace);
+        self.validate_namespace_scope(gvk, namespace)?;
 
         let mut meta = self.extract_metadata(&object)?;
         let name = Self::extract_name(&meta)?;
@@ -318,7 +348,7 @@ impl ObjectTracker {
 
         // Delete if conditions are met
         if should_be_deleted(&new_meta) {
-            return self.delete(gvr, namespace, &name);
+            return self.delete(gvr, namespace, &name, true);
         }
 
         let stored = StoredObject {
@@ -338,20 +368,121 @@ impl ObjectTracker {
         Ok(object)
     }
 
-    pub fn delete(&self, gvr: &GVR, namespace: &str, name: &str) -> Result<Value> {
+    /// Deletes `name` and optionally cascades to all objects that transitively
+    /// reference it via `ownerReferences`.
+    ///
+    /// When `cascade` is `true`, uses an iterative worklist under a single write
+    /// lock: removes the target object, collects its UID, scans for dependents
+    /// respecting Kubernetes scope rules (cluster-scoped owners scan all
+    /// namespaces, namespaced owners scan only their own namespace), removes
+    /// them, collects their UIDs, and repeats until no more dependents are found.
+    /// A visited set prevents cycles.
+    ///
+    /// When `cascade` is `false`, only the target object is removed — no
+    /// dependent scanning or deletion is performed.
+    pub fn delete(&self, gvr: &GVR, namespace: &str, name: &str, cascade: bool) -> Result<Value> {
         trace!("Deleting object: {:?} {}/{}", gvr, namespace, name);
 
         let mut objects = self.objects.write().expect("lock poisoned");
 
-        objects
+        let stored = objects
             .get_mut(gvr)
             .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
             .and_then(|ns_objects| ns_objects.remove(name))
-            .map(|stored| {
-                debug!("Deleted object: {}/{}", namespace, name);
-                stored.data
-            })
-            .ok_or_else(|| gvr.not_found_error(namespace, name))
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
+
+        debug!("Deleted object: {}/{}", namespace, name);
+        let data = stored.data;
+
+        if !cascade {
+            return Ok(data);
+        }
+
+        let mut visited = HashSet::new();
+        let mut pending = Vec::new();
+
+        match stored.metadata.uid {
+            Some(uid) => {
+                visited.insert(uid.clone());
+                pending.push((uid, namespace.to_string()));
+            }
+            None => {
+                debug!(
+                    "Cascade requested for {}/{} but object has no UID; dependents will not be removed",
+                    namespace, name
+                );
+            }
+        }
+
+        while let Some((uid, owner_ns)) = pending.pop() {
+            let dependents = Self::find_dependents_locked(&objects, &uid, &owner_ns);
+            for (dep_gvr, dep_ns, dep_name) in dependents {
+                if let Some(dep_stored) = objects
+                    .get_mut(&dep_gvr)
+                    .and_then(|g| g.get_mut(&dep_ns))
+                    .and_then(|n| n.remove(&dep_name))
+                {
+                    debug!("Cascade-deleted dependent: {}/{}", dep_ns, dep_name);
+                    if let Some(dep_uid) = dep_stored.metadata.uid {
+                        if visited.insert(dep_uid.clone()) {
+                            pending.push((dep_uid, dep_ns));
+                        }
+                    } else {
+                        debug!(
+                            "Cascade-deleted {}/{} has no UID; skipping transitive dependent scan",
+                            dep_ns, dep_name
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(data)
+    }
+
+    /// Returns all objects in `objects` that list `owner_uid` in their
+    /// `ownerReferences`, respecting Kubernetes ownership scope rules:
+    ///
+    /// - Cluster-scoped owner (`owner_namespace` is `""`): scans ALL namespace
+    ///   buckets, since cluster-scoped resources can own dependents in any namespace.
+    /// - Namespaced owner: scans ONLY the owner's namespace, since namespaced
+    ///   resources cannot own cluster-scoped resources or resources in other namespaces.
+    fn find_dependents_locked(
+        objects: &ObjectStorage,
+        owner_uid: &str,
+        owner_namespace: &str,
+    ) -> Vec<(GVR, String, String)> {
+        let mut dependents = Vec::new();
+
+        for (gvr, namespaces) in objects {
+            if owner_namespace.is_empty() {
+                for (ns, ns_objects) in namespaces {
+                    for (name, stored) in ns_objects {
+                        if stored
+                            .metadata
+                            .owner_references
+                            .as_ref()
+                            .is_some_and(|refs| refs.iter().any(|r| r.uid == owner_uid))
+                        {
+                            dependents.push((gvr.clone(), ns.clone(), name.clone()));
+                        }
+                    }
+                }
+            } else if let Some(ns_objects) = namespaces.get(owner_namespace) {
+                for (name, stored) in ns_objects {
+                    if stored
+                        .metadata
+                        .owner_references
+                        .as_ref()
+                        .is_some_and(|refs| refs.iter().any(|r| r.uid == owner_uid))
+                    {
+                        dependents.push((gvr.clone(), owner_namespace.to_string(), name.clone()));
+                    }
+                }
+            }
+        }
+
+        dependents
     }
 
     pub fn list(&self, gvr: &GVR, namespace: Option<&str>) -> Result<Vec<Value>> {
@@ -390,7 +521,10 @@ impl ObjectTracker {
 }
 
 impl Default for ObjectTracker {
+    /// Creates a tracker with an empty registry. CRD namespace-scope validation
+    /// will not apply to any custom resources. Prefer constructing via
+    /// `FakeClient` or `ClientBuilder` to share the registry.
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(ResourceRegistry::new()))
     }
 }

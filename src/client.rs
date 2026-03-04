@@ -60,12 +60,13 @@ pub struct FakeClient {
 impl FakeClient {
     /// Create a new fake client with default settings
     pub fn new() -> Self {
+        let registry = Arc::new(ResourceRegistry::new());
         Self {
-            tracker: Arc::new(ObjectTracker::new()),
+            tracker: Arc::new(ObjectTracker::new(Arc::clone(&registry))),
             indexes: Arc::new(std::sync::RwLock::new(HashMap::new())),
             return_managed_fields: false,
             interceptors: None,
-            registry: Arc::new(ResourceRegistry::new()),
+            registry,
             validator: None,
         }
     }
@@ -378,7 +379,7 @@ impl FakeClient {
         // Validate that delete verb is supported
         self.validate_verb(&gvk, "delete")?;
 
-        let value = self.tracker.delete(&gvr, namespace, name)?;
+        let value = self.tracker.delete(&gvr, namespace, name, true)?;
 
         let result: K = serde_json::from_value(value)?;
         Ok(result)

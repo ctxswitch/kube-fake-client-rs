@@ -92,6 +92,11 @@ pub struct DeleteContext<'a> {
     pub namespace: &'a str,
     /// Name of the object
     pub name: &'a str,
+    /// Whether cascade deletion is requested.
+    ///
+    /// `false` when the propagation policy is `Orphan` or legacy `orphanDependents`
+    /// is `true`; `true` for `Background`, `Foreground`, or when no policy is specified.
+    pub cascade: bool,
 }
 
 /// Context passed to List interceptors
