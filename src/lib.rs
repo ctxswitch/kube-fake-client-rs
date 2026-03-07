@@ -30,9 +30,11 @@ mod client_utils;
 pub mod discovery;
 mod error;
 mod field_selectors;
+mod fields_v1;
 pub mod gen;
 pub mod interceptor;
 pub mod label_selector;
+mod managed_fields;
 mod mock_service;
 pub mod registry;
 mod tracker;
@@ -44,7 +46,11 @@ mod builder_test;
 #[cfg(test)]
 mod client_test;
 #[cfg(test)]
+mod fields_v1_test;
+#[cfg(test)]
 mod label_selector_test;
+#[cfg(test)]
+mod managed_fields_test;
 #[cfg(test)]
 mod mock_service_test;
 #[cfg(test)]
@@ -55,3 +61,4 @@ mod utils_test;
 pub use builder::ClientBuilder;
 pub use error::{Error, Result};
 pub use kube::Client;
+pub use mock_service::PatchType;
