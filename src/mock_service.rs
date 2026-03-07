@@ -231,6 +231,36 @@ impl MockService {
         params
     }
 
+    /// Parse delete-related query parameters from the URL query string.
+    ///
+    /// Extracts `propagationPolicy` and `orphanDependents`. All other
+    /// parameters are ignored.
+    pub(crate) fn parse_delete_params(query: Option<&str>) -> (Option<String>, Option<bool>) {
+        let mut propagation_policy: Option<String> = None;
+        let mut orphan_dependents: Option<bool> = None;
+
+        if let Some(query_str) = query {
+            for pair in query_str.split('&') {
+                if let Some((key, value)) = pair.split_once('=') {
+                    let decoded_value =
+                        urlencoding::decode(value).unwrap_or(std::borrow::Cow::Borrowed(value));
+
+                    match key {
+                        "propagationPolicy" => {
+                            propagation_policy = Some(decoded_value.to_string());
+                        }
+                        "orphanDependents" => {
+                            orphan_dependents = Some(decoded_value == "true");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        (propagation_policy, orphan_dependents)
+    }
+
     /// Check if object matches label selector
     fn matches_label_selector(obj: &Value, selector: &str) -> bool {
         let labels_obj = obj
@@ -897,21 +927,59 @@ impl MockService {
 
         handle_error!(self.client.validate_verb(&gvk, "delete"));
 
-        let cascade = if !body.is_empty() {
-            // Malformed or missing delete options default to cascade=true,
-            // matching Kubernetes API server default behaviour.
-            let delete_opts: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-            if let Some(policy) = delete_opts
+        // Parse propagationPolicy and orphanDependents from both the request
+        // body and query parameters. Query parameters take precedence.
+        let (mut propagation_policy, mut orphan_dependents): (Option<String>, Option<bool>) =
+            (None, None);
+
+        if !body.is_empty() {
+            let delete_opts: serde_json::Value = match serde_json::from_slice(&body) {
+                Ok(v) => v,
+                Err(_) => {
+                    return Self::error_response(
+                        StatusCode::BAD_REQUEST,
+                        "failed to decode delete options body",
+                    );
+                }
+            };
+            propagation_policy = delete_opts
                 .get("propagationPolicy")
                 .and_then(|v| v.as_str())
-            {
-                policy != "Orphan"
-            } else {
-                delete_opts
-                    .get("orphanDependents")
-                    .and_then(|v| v.as_bool())
-                    != Some(true)
+                .map(String::from);
+            orphan_dependents = delete_opts
+                .get("orphanDependents")
+                .and_then(|v| v.as_bool());
+        }
+
+        let (query_policy, query_orphan) = Self::parse_delete_params(query);
+        propagation_policy = query_policy.or(propagation_policy);
+        orphan_dependents = query_orphan.or(orphan_dependents);
+
+        if let Some(ref policy) = propagation_policy {
+            match policy.as_str() {
+                "Orphan" | "Background" | "Foreground" => {}
+                _ => {
+                    return Self::error_response(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        &format!(
+                            "Invalid value: \"{policy}\": supported values: \"Orphan\", \"Background\", \"Foreground\""
+                        ),
+                    );
+                }
             }
+        }
+
+        if propagation_policy.is_some() && orphan_dependents.is_some() {
+            return Self::error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "propagationPolicy and orphanDependents are mutually exclusive",
+            );
+        }
+
+        let cascade = if let Some(ref policy) = propagation_policy {
+            policy != "Orphan"
+        } else if let Some(orphan) = orphan_dependents {
+            !orphan
         } else {
             true
         };

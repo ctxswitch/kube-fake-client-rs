@@ -1293,6 +1293,236 @@ mod tests {
         assert!(pods.get("child-pod").await.is_err());
     }
 
+    /// Delete with `DeleteParams::orphan()` should NOT cascade to children.
+    #[tokio::test]
+    async fn test_delete_orphan_does_not_cascade() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let mut owner = Pod::default();
+        owner.metadata.name = Some("owner-pod".to_string());
+        let created = pods.create(&PostParams::default(), &owner).await.unwrap();
+        let owner_uid = created.metadata.uid.unwrap();
+
+        let mut child = Pod::default();
+        child.metadata.name = Some("child-pod".to_string());
+        child.metadata.owner_references = Some(vec![
+            k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                api_version: "v1".to_string(),
+                kind: "Pod".to_string(),
+                name: "owner-pod".to_string(),
+                uid: owner_uid,
+                ..Default::default()
+            },
+        ]);
+        pods.create(&PostParams::default(), &child).await.unwrap();
+
+        pods.delete("owner-pod", &DeleteParams::orphan())
+            .await
+            .unwrap();
+
+        // Owner is gone
+        assert!(pods.get("owner-pod").await.is_err());
+        // Child should still exist because orphan does not cascade
+        let child_result = pods.get("child-pod").await;
+        assert!(child_result.is_ok(), "child should survive orphan delete");
+    }
+
+    /// Delete with `DeleteParams::background()` should cascade to children.
+    #[tokio::test]
+    async fn test_delete_background_cascades() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let mut owner = Pod::default();
+        owner.metadata.name = Some("owner-pod".to_string());
+        let created = pods.create(&PostParams::default(), &owner).await.unwrap();
+        let owner_uid = created.metadata.uid.unwrap();
+
+        let mut child = Pod::default();
+        child.metadata.name = Some("child-pod".to_string());
+        child.metadata.owner_references = Some(vec![
+            k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                api_version: "v1".to_string(),
+                kind: "Pod".to_string(),
+                name: "owner-pod".to_string(),
+                uid: owner_uid,
+                ..Default::default()
+            },
+        ]);
+        pods.create(&PostParams::default(), &child).await.unwrap();
+
+        pods.delete("owner-pod", &DeleteParams::background())
+            .await
+            .unwrap();
+
+        assert!(pods.get("owner-pod").await.is_err());
+        assert!(
+            pods.get("child-pod").await.is_err(),
+            "child should be cascaded with background delete"
+        );
+    }
+
+    /// Delete with `DeleteParams::foreground()` should cascade to children.
+    #[tokio::test]
+    async fn test_delete_foreground_cascades() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let mut owner = Pod::default();
+        owner.metadata.name = Some("owner-pod".to_string());
+        let created = pods.create(&PostParams::default(), &owner).await.unwrap();
+        let owner_uid = created.metadata.uid.unwrap();
+
+        let mut child = Pod::default();
+        child.metadata.name = Some("child-pod".to_string());
+        child.metadata.owner_references = Some(vec![
+            k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                api_version: "v1".to_string(),
+                kind: "Pod".to_string(),
+                name: "owner-pod".to_string(),
+                uid: owner_uid,
+                ..Default::default()
+            },
+        ]);
+        pods.create(&PostParams::default(), &child).await.unwrap();
+
+        pods.delete("owner-pod", &DeleteParams::foreground())
+            .await
+            .unwrap();
+
+        assert!(pods.get("owner-pod").await.is_err());
+        assert!(
+            pods.get("child-pod").await.is_err(),
+            "child should be cascaded with foreground delete"
+        );
+    }
+
+    /// `parse_delete_params` extracts propagationPolicy from query string.
+    #[test]
+    fn test_parse_delete_params_propagation_policy() {
+        use crate::mock_service::MockService;
+
+        let (policy, orphan) = MockService::parse_delete_params(Some("propagationPolicy=Orphan"));
+        assert_eq!(policy.as_deref(), Some("Orphan"));
+        assert_eq!(orphan, None);
+
+        let (policy, orphan) =
+            MockService::parse_delete_params(Some("propagationPolicy=Background"));
+        assert_eq!(policy.as_deref(), Some("Background"));
+        assert_eq!(orphan, None);
+    }
+
+    /// `parse_delete_params` extracts orphanDependents from query string.
+    #[test]
+    fn test_parse_delete_params_orphan_dependents() {
+        use crate::mock_service::MockService;
+
+        let (policy, orphan) = MockService::parse_delete_params(Some("orphanDependents=true"));
+        assert_eq!(policy, None);
+        assert_eq!(orphan, Some(true));
+
+        let (policy, orphan) = MockService::parse_delete_params(Some("orphanDependents=false"));
+        assert_eq!(policy, None);
+        assert_eq!(orphan, Some(false));
+    }
+
+    /// `parse_delete_params` returns None for both when query is empty.
+    #[test]
+    fn test_parse_delete_params_empty() {
+        use crate::mock_service::MockService;
+
+        let (policy, orphan) = MockService::parse_delete_params(None);
+        assert_eq!(policy, None);
+        assert_eq!(orphan, None);
+    }
+
+    /// Both propagationPolicy and orphanDependents set in body returns 422.
+    #[tokio::test]
+    async fn test_delete_mutual_exclusivity_returns_422() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("excl-pod".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        let body = serde_json::to_vec(&json!({
+            "propagationPolicy": "Background",
+            "orphanDependents": true
+        }))
+        .unwrap();
+
+        let req = http::Request::delete("/api/v1/namespaces/default/pods/excl-pod")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap();
+
+        let result = client.request_text(req).await;
+        assert!(
+            result.is_err(),
+            "should return error for mutually exclusive options"
+        );
+        if let Err(kube::Error::Api(err)) = result {
+            assert_eq!(err.code, 422);
+        } else {
+            panic!("expected kube::Error::Api with code 422");
+        }
+    }
+
+    /// Invalid propagationPolicy value returns 422.
+    #[tokio::test]
+    async fn test_delete_invalid_propagation_policy_returns_422() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("invalid-policy-pod".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        let body = serde_json::to_vec(&json!({
+            "propagationPolicy": "InvalidPolicy"
+        }))
+        .unwrap();
+
+        let req = http::Request::delete("/api/v1/namespaces/default/pods/invalid-policy-pod")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap();
+
+        let result = client.request_text(req).await;
+        assert!(result.is_err(), "should return error for invalid policy");
+        if let Err(kube::Error::Api(err)) = result {
+            assert_eq!(err.code, 422);
+        } else {
+            panic!("expected kube::Error::Api with code 422");
+        }
+    }
+
+    /// Malformed JSON body on delete returns 400.
+    #[tokio::test]
+    async fn test_delete_malformed_body_returns_400() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("malformed-pod".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        let req = http::Request::delete("/api/v1/namespaces/default/pods/malformed-pod")
+            .header("Content-Type", "application/json")
+            .body(b"{invalid json".to_vec())
+            .unwrap();
+
+        let result = client.request_text(req).await;
+        assert!(result.is_err(), "should return error for malformed body");
+        if let Err(kube::Error::Api(err)) = result {
+            assert_eq!(err.code, 400);
+        } else {
+            panic!("expected kube::Error::Api with code 400");
+        }
+    }
+
     // ============================================================================
     // Server-Side Apply (SSA) Create-on-Patch Tests
     // ============================================================================
