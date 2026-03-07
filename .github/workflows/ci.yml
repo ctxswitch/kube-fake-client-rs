@@ -12,51 +12,49 @@ env:
 
 jobs:
   test:
+    name: test (stable, ${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [v1_31, v1_35, "v1_31,validation", "v1_35,validation"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+
+      - name: run tests
+        run: cargo test --verbose --no-default-features --features ${{ matrix.features }}
+
+  test-full:
     name: test (${{ matrix.rust }}, ${{ matrix.features }})
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Stable Rust - all k8s-openapi versions
-          - rust: stable
-            features: v1_31
-            cache_key: v1_31
           - rust: stable
             features: v1_32
-            cache_key: v1_32
           - rust: stable
             features: v1_33
-            cache_key: v1_33
           - rust: stable
             features: v1_34
-            cache_key: v1_34
-          - rust: stable
-            features: v1_35
-            cache_key: v1_35
-          # Stable Rust - all k8s-openapi versions with validation
-          - rust: stable
-            features: v1_31,validation
-            cache_key: v1_31-validation
           - rust: stable
             features: v1_32,validation
-            cache_key: v1_32-validation
           - rust: stable
             features: v1_33,validation
-            cache_key: v1_33-validation
           - rust: stable
             features: v1_34,validation
-            cache_key: v1_34-validation
-          - rust: stable
-            features: v1_35,validation
-            cache_key: v1_35-validation
-          # Nightly Rust - v1_35 only
           - rust: nightly
             features: v1_35
-            cache_key: v1_35
           - rust: nightly
             features: v1_35,validation
-            cache_key: v1_35-validation
     steps:
       - uses: actions/checkout@v6
 
@@ -65,38 +63,12 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
 
-      - name: cache cargo registry
-        uses: actions/cache@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: ~/.cargo/registry
-          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-registry-
-
-      - name: cache cargo index
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/git
-          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-index-
-
-      - name: cache cargo build
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ubuntu-${{ matrix.rust }}-${{ matrix.cache_key }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-${{ matrix.rust }}-${{ matrix.cache_key }}-cargo-build-target-
-
-      - name: check
-        run: cargo check --all-targets --no-default-features --features ${{ matrix.features }}
+          key: ${{ matrix.features }}
 
       - name: run tests
         run: cargo test --verbose --no-default-features --features ${{ matrix.features }}
-
-      - name: run doc tests
-        run: cargo test --doc --no-default-features --features ${{ matrix.features }}
 
   lint:
     name: lint
@@ -109,29 +81,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: cache cargo registry
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/registry
-          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-registry-
-
-      - name: cache cargo index
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/git
-          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-index-
-
-      - name: cache cargo build
-        uses: actions/cache@v5
-        with:
-          path: target
-          key: ubuntu-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-build-target-
+      - uses: Swatinem/rust-cache@v2
 
       - name: check formatting
         run: cargo fmt -- --check
@@ -148,8 +98,10 @@ jobs:
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: install tarpaulin
-        run: cargo install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
 
       - name: generate coverage (with validation)
         run: cargo tarpaulin --verbose --no-default-features --features v1_35,validation --workspace --timeout 120 --out xml
@@ -188,21 +140,7 @@ jobs:
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: cache cargo registry
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/registry
-          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-registry-
-
-      - name: cache cargo index
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo/git
-          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ubuntu-cargo-index-
+      - uses: Swatinem/rust-cache@v2
 
       - name: check documentation (default features)
         run: cargo doc --no-deps --document-private-items
