@@ -1,6 +1,7 @@
 //! Interceptors for customizing client behavior during testing
 
 use crate::client::FakeClient;
+use crate::mock_service::PatchType;
 use crate::Result;
 use kube::api::{ListParams, PatchParams, PostParams};
 use serde_json::Value;
@@ -117,6 +118,8 @@ pub struct PatchContext<'a> {
     pub name: &'a str,
     /// Patch parameters
     pub params: &'a PatchParams,
+    /// The type of patch being applied
+    pub patch_type: PatchType,
 }
 
 pub type CreateInterceptor = Arc<dyn Fn(CreateContext) -> Result<Option<Value>> + Send + Sync>;
@@ -180,6 +183,8 @@ pub struct PatchStatusContext<'a> {
     pub name: &'a str,
     /// Patch parameters
     pub params: &'a PatchParams,
+    /// The type of patch being applied
+    pub patch_type: PatchType,
 }
 
 pub type PatchStatusInterceptor =

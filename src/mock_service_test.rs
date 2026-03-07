@@ -4,6 +4,8 @@
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::ClientBuilder;
     use k8s_openapi::api::core::v1::{Node, Pod};
     use k8s_openapi::api::rbac::v1::ClusterRole;
@@ -1289,5 +1291,684 @@ mod tests {
 
         // Child should be gone via cascading deletion
         assert!(pods.get("child-pod").await.is_err());
+    }
+
+    // ============================================================================
+    // Server-Side Apply (SSA) Create-on-Patch Tests
+    // ============================================================================
+
+    /// SSA patch creates a new namespaced resource when it does not exist.
+    #[tokio::test]
+    async fn ssa_patch_creates_resource_when_not_found() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "ssa-pod"
+            },
+            "spec": {
+                "containers": [{
+                    "name": "nginx",
+                    "image": "nginx:latest"
+                }]
+            }
+        });
+
+        let result = pods
+            .patch(
+                "ssa-pod",
+                &PatchParams::apply("test-manager"),
+                &Patch::Apply(&patch_body),
+            )
+            .await;
+        assert!(result.is_ok(), "SSA patch should create the resource");
+
+        let fetched = pods.get("ssa-pod").await.unwrap();
+        assert_eq!(fetched.metadata.name.as_deref(), Some("ssa-pod"));
+    }
+
+    /// SSA patch updates an existing resource (normal patch behavior preserved).
+    #[tokio::test]
+    async fn ssa_patch_updates_existing_resource() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("ssa-existing".to_string());
+        pod.metadata.labels = Some(BTreeMap::from([("app".to_string(), "v1".to_string())]));
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "ssa-existing",
+                "labels": {
+                    "app": "v2"
+                }
+            }
+        });
+
+        let patched = pods
+            .patch(
+                "ssa-existing",
+                &PatchParams::apply("test-manager"),
+                &Patch::Apply(&patch_body),
+            )
+            .await
+            .unwrap();
+
+        let labels = patched.metadata.labels.unwrap();
+        assert_eq!(labels.get("app").unwrap(), "v2");
+    }
+
+    /// SSA patch creates a cluster-scoped resource when it does not exist.
+    #[tokio::test]
+    async fn ssa_patch_creates_cluster_scoped_resource() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let nodes: kube::Api<Node> = kube::Api::all(client);
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "name": "ssa-node"
+            }
+        });
+
+        let result = nodes
+            .patch(
+                "ssa-node",
+                &PatchParams::apply("test-manager"),
+                &Patch::Apply(&patch_body),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "SSA patch should create a cluster-scoped resource"
+        );
+
+        let fetched = nodes.get("ssa-node").await.unwrap();
+        assert_eq!(fetched.metadata.name.as_deref(), Some("ssa-node"));
+    }
+
+    /// Merge patch on a non-existent resource should still fail with not-found.
+    #[tokio::test]
+    async fn merge_patch_fails_when_resource_not_found() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "metadata": {
+                "labels": { "app": "test" }
+            }
+        });
+
+        let result = pods
+            .patch(
+                "nonexistent",
+                &PatchParams::default(),
+                &Patch::Merge(&patch_body),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "Merge patch should fail on non-existent resource"
+        );
+    }
+
+    /// SSA patch creates a resource using the URL path name when the body omits metadata.name.
+    #[tokio::test]
+    async fn ssa_patch_creates_resource_without_name_in_body() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {},
+            "spec": {
+                "containers": [{
+                    "name": "nginx",
+                    "image": "nginx:latest"
+                }]
+            }
+        });
+
+        let result = pods
+            .patch(
+                "url-name-pod",
+                &PatchParams::apply("test-manager"),
+                &Patch::Apply(&patch_body),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "SSA patch should use URL name when body omits it"
+        );
+
+        let fetched = pods.get("url-name-pod").await.unwrap();
+        assert_eq!(fetched.metadata.name.as_deref(), Some("url-name-pod"));
+        assert_eq!(
+            fetched.metadata.namespace.as_deref(),
+            Some("default"),
+            "namespace should be set from URL path"
+        );
+    }
+
+    /// SSA patch uses the URL path name even when the body contains a different name.
+    #[tokio::test]
+    async fn ssa_patch_url_name_overrides_body_name() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "body-name"
+            }
+        });
+
+        let result = pods
+            .patch(
+                "url-name",
+                &PatchParams::apply("test-manager"),
+                &Patch::Apply(&patch_body),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.metadata.name.as_deref(),
+            Some("url-name"),
+            "URL path name must take precedence over body name"
+        );
+    }
+
+    /// JSON patch on a non-existent resource should fail with not-found.
+    #[tokio::test]
+    async fn json_patch_fails_when_resource_not_found() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!([
+            { "op": "add", "path": "/metadata/labels/app", "value": "test" }
+        ]);
+
+        let result = pods
+            .patch(
+                "nonexistent",
+                &PatchParams::default(),
+                &Patch::Json::<()>(serde_json::from_value(patch_body).unwrap()),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "JSON patch should fail on non-existent resource"
+        );
+    }
+
+    // ============================================================================
+    // parse_patch_params Tests
+    // ============================================================================
+
+    /// Verify that `parse_patch_params` extracts `fieldManager` and `force`.
+    #[test]
+    fn parse_patch_params_extracts_field_manager_and_force() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(Some("fieldManager=test-mgr&force=true"));
+        assert_eq!(params.field_manager.as_deref(), Some("test-mgr"));
+        assert!(params.force);
+    }
+
+    /// Verify that `parse_patch_params` handles URL-encoded `fieldManager`.
+    #[test]
+    fn parse_patch_params_decodes_url_encoded_field_manager() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(Some("fieldManager=my%20manager"));
+        assert_eq!(params.field_manager.as_deref(), Some("my manager"));
+    }
+
+    /// Verify that `parse_patch_params` defaults to `force=false`.
+    #[test]
+    fn parse_patch_params_defaults_force_to_false() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(Some("fieldManager=mgr"));
+        assert!(!params.force);
+    }
+
+    /// Verify that `parse_patch_params` treats `force=false` as false.
+    #[test]
+    fn parse_patch_params_force_false() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(Some("force=false"));
+        assert!(!params.force);
+    }
+
+    /// Verify that `parse_patch_params` handles bare `force` (no value).
+    #[test]
+    fn parse_patch_params_bare_force() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(Some("force"));
+        assert!(params.force);
+    }
+
+    /// Verify that `parse_patch_params` returns defaults for `None` query.
+    #[test]
+    fn parse_patch_params_none_query() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(None);
+        assert_eq!(params.field_manager, None);
+        assert!(!params.force);
+    }
+
+    /// Verify that `parse_patch_params` returns defaults for empty query string.
+    #[test]
+    fn parse_patch_params_empty_query() {
+        use crate::mock_service::MockService;
+
+        let params = MockService::parse_patch_params(Some(""));
+        assert_eq!(params.field_manager, None);
+        assert!(!params.force);
+    }
+
+    /// SSA (apply patch) without `fieldManager` returns 422.
+    #[tokio::test]
+    async fn ssa_patch_without_field_manager_returns_422() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "no-fm-pod"
+            }
+        });
+
+        // PatchParams::default() has no fieldManager set
+        let result = pods
+            .patch(
+                "no-fm-pod",
+                &PatchParams::default(),
+                &Patch::Apply(&patch_body),
+            )
+            .await;
+
+        let err = result.unwrap_err();
+        if let kube::Error::Api(api_err) = &err {
+            assert_eq!(api_err.code, 422, "expected 422, got {}", api_err.code);
+            assert!(
+                api_err.message.contains("fieldManager"),
+                "error message should mention fieldManager: {}",
+                api_err.message
+            );
+        } else {
+            panic!("expected kube::Error::Api, got: {err:?}");
+        }
+    }
+
+    /// SSA patch on /status subresource should still fail when resource does not exist.
+    #[tokio::test]
+    async fn ssa_status_patch_fails_when_resource_not_found() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "status": {
+                "phase": "Running"
+            }
+        });
+
+        let result = pods
+            .patch_status(
+                "nonexistent",
+                &PatchParams::apply("test-manager"),
+                &Patch::Apply(&patch_body),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "SSA status patch should not create a resource"
+        );
+    }
+
+    // ============================================================================
+    // Field Ownership / managedFields Integration Tests
+    // ============================================================================
+
+    /// SSA apply on a non-existent pod creates it with managedFields populated.
+    #[tokio::test]
+    async fn ssa_creates_object_with_managed_fields() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "mf-pod",
+                "labels": { "app": "web" }
+            }
+        });
+
+        let pod = pods
+            .patch(
+                "mf-pod",
+                &PatchParams::apply("test-mgr"),
+                &Patch::Apply(&patch_body),
+            )
+            .await
+            .unwrap();
+
+        let mf = pod.metadata.managed_fields.unwrap_or_default();
+        assert_eq!(mf.len(), 1, "should have exactly one managedFields entry");
+        assert_eq!(
+            mf[0].manager.as_deref(),
+            Some("test-mgr"),
+            "manager should match"
+        );
+    }
+
+    /// Two different field managers apply non-overlapping fields. Both succeed
+    /// and managedFields has 2 entries.
+    #[tokio::test]
+    async fn ssa_two_managers_different_fields_no_conflict() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_a = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "mf-pod2",
+                "labels": { "app": "web" }
+            }
+        });
+
+        pods.patch(
+            "mf-pod2",
+            &PatchParams::apply("manager-a"),
+            &Patch::Apply(&patch_a),
+        )
+        .await
+        .unwrap();
+
+        let patch_b = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "mf-pod2",
+                "annotations": { "note": "hello" }
+            }
+        });
+
+        let pod = pods
+            .patch(
+                "mf-pod2",
+                &PatchParams::apply("manager-b"),
+                &Patch::Apply(&patch_b),
+            )
+            .await
+            .unwrap();
+
+        let mf = pod.metadata.managed_fields.unwrap_or_default();
+        assert_eq!(mf.len(), 2, "should have 2 managedFields entries");
+
+        let managers: Vec<&str> = mf.iter().filter_map(|e| e.manager.as_deref()).collect();
+        assert!(managers.contains(&"manager-a"));
+        assert!(managers.contains(&"manager-b"));
+    }
+
+    /// Two managers apply overlapping fields with force=false. Second apply
+    /// returns 409 Conflict.
+    #[tokio::test]
+    async fn ssa_two_managers_conflict_returns_409() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_a = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "conflict-pod",
+                "labels": { "app": "web" }
+            }
+        });
+
+        pods.patch(
+            "conflict-pod",
+            &PatchParams::apply("manager-a"),
+            &Patch::Apply(&patch_a),
+        )
+        .await
+        .unwrap();
+
+        // Second manager tries to own the same label field
+        let patch_b = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "conflict-pod",
+                "labels": { "app": "other" }
+            }
+        });
+
+        let result = pods
+            .patch(
+                "conflict-pod",
+                &PatchParams::apply("manager-b"),
+                &Patch::Apply(&patch_b),
+            )
+            .await;
+
+        let err = result.unwrap_err();
+        match &err {
+            kube::Error::Api(ref api_err) if api_err.code == 409 => {}
+            other => panic!("expected 409 Conflict, got: {other:?}"),
+        }
+    }
+
+    /// Same overlapping fields but second manager uses force=true. Succeeds and
+    /// first manager's conflicting fields are pruned.
+    #[tokio::test]
+    async fn ssa_force_true_takes_ownership() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_a = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "force-pod",
+                "labels": { "app": "web" }
+            }
+        });
+
+        pods.patch(
+            "force-pod",
+            &PatchParams::apply("manager-a"),
+            &Patch::Apply(&patch_a),
+        )
+        .await
+        .unwrap();
+
+        let patch_b = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "force-pod",
+                "labels": { "app": "taken" }
+            }
+        });
+
+        let mut pp = PatchParams::apply("manager-b");
+        pp.force = true;
+
+        let pod = pods
+            .patch("force-pod", &pp, &Patch::Apply(&patch_b))
+            .await
+            .unwrap();
+
+        let mf = pod.metadata.managed_fields.unwrap_or_default();
+        // manager-a should have been fully pruned (only had that one label)
+        let managers: Vec<&str> = mf.iter().filter_map(|e| e.manager.as_deref()).collect();
+        assert!(
+            managers.contains(&"manager-b"),
+            "manager-b should own the field"
+        );
+        // manager-a either absent or has no overlapping fields
+        assert!(
+            !managers.contains(&"manager-a"),
+            "manager-a should have been pruned"
+        );
+    }
+
+    /// Verify the shape of a managedFields entry.
+    #[tokio::test]
+    async fn ssa_managed_fields_entry_shape() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let patch_body = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "shape-pod",
+                "labels": { "app": "web" }
+            }
+        });
+
+        pods.patch(
+            "shape-pod",
+            &PatchParams::apply("shape-mgr"),
+            &Patch::Apply(&patch_body),
+        )
+        .await
+        .unwrap();
+
+        // GET the pod back as raw JSON to inspect the full entry shape
+        let raw_pod = pods.get("shape-pod").await.unwrap();
+        let mf = raw_pod.metadata.managed_fields.unwrap_or_default();
+        assert!(!mf.is_empty(), "managedFields should not be empty");
+
+        let entry = &mf[0];
+        assert_eq!(entry.manager.as_deref(), Some("shape-mgr"));
+        assert_eq!(entry.operation.as_deref(), Some("Apply"));
+        assert_eq!(entry.api_version.as_deref(), Some("v1"));
+        assert_eq!(entry.fields_type.as_deref(), Some("FieldsV1"));
+        assert!(entry.fields_v1.is_some(), "fieldsV1 should be present");
+        assert!(entry.time.is_some(), "time should be present");
+        assert!(
+            entry.subresource.is_none() || entry.subresource.as_deref() == Some(""),
+            "subresource should not be set for main resource"
+        );
+    }
+
+    /// SSA on /status produces an entry with subresource: "status" and doesn't
+    /// conflict with main resource manager owning the same fields.
+    #[tokio::test]
+    async fn ssa_status_subresource_uses_status_subresource() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // First create the pod via SSA on main resource
+        let create_patch = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "status-sub-pod",
+                "labels": { "app": "web" }
+            }
+        });
+
+        pods.patch(
+            "status-sub-pod",
+            &PatchParams::apply("main-mgr"),
+            &Patch::Apply(&create_patch),
+        )
+        .await
+        .unwrap();
+
+        // Now SSA on /status with the same manager name — should not conflict
+        let status_patch = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "status": {
+                "phase": "Running"
+            }
+        });
+
+        let pod = pods
+            .patch_status(
+                "status-sub-pod",
+                &PatchParams::apply("main-mgr"),
+                &Patch::Apply(&status_patch),
+            )
+            .await
+            .unwrap();
+
+        let mf = pod.metadata.managed_fields.unwrap_or_default();
+        assert!(
+            mf.len() >= 2,
+            "should have at least 2 entries (main + status)"
+        );
+
+        let status_entries: Vec<_> = mf
+            .iter()
+            .filter(|e| e.subresource.as_deref() == Some("status"))
+            .collect();
+        assert_eq!(
+            status_entries.len(),
+            1,
+            "should have exactly one status subresource entry"
+        );
+        assert_eq!(status_entries[0].manager.as_deref(), Some("main-mgr"));
+    }
+
+    /// A merge patch doesn't add managedFields to the object.
+    #[tokio::test]
+    async fn client_side_patches_dont_touch_managed_fields() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        // Create the pod first
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("merge-pod".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        // Apply a merge patch
+        let merge_body = json!({
+            "metadata": {
+                "labels": { "patched": "yes" }
+            }
+        });
+
+        let patched = pods
+            .patch(
+                "merge-pod",
+                &PatchParams::default(),
+                &Patch::Merge(&merge_body),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            patched.metadata.managed_fields.is_none()
+                || patched.metadata.managed_fields.as_ref().unwrap().is_empty(),
+            "merge patch should not create managedFields"
+        );
     }
 }

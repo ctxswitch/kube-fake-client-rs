@@ -7,6 +7,7 @@ use crate::error::Error;
 use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
 use crate::label_selector;
+use crate::managed_fields::apply_field_ownership;
 use crate::tracker::GVR;
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt};
@@ -47,9 +48,8 @@ struct ParsedPath {
 }
 
 /// Patch types based on Content-Type header
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(clippy::enum_variant_names)]
-enum PatchType {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatchType {
     /// RFC 6902 JSON Patch - application/json-patch+json
     JsonPatch,
     /// RFC 7386 JSON Merge Patch - application/merge-patch+json
@@ -163,6 +163,38 @@ impl MockService {
             .map(|s| s.to_string())
     }
 
+    /// Parse query parameters from URL and create `PatchParams`
+    ///
+    /// Extracts `fieldManager` and `force` from URL query string. All other
+    /// parameters are ignored.
+    pub(crate) fn parse_patch_params(query: Option<&str>) -> PatchParams {
+        let mut params = PatchParams::default();
+
+        if let Some(query_str) = query {
+            for pair in query_str.split('&') {
+                if let Some((key, value)) = pair.split_once('=') {
+                    let decoded_value =
+                        urlencoding::decode(value).unwrap_or(std::borrow::Cow::Borrowed(value));
+
+                    match key {
+                        "fieldManager" => {
+                            params.field_manager = Some(decoded_value.to_string());
+                        }
+                        "force" => {
+                            params.force = decoded_value == "true";
+                        }
+                        _ => {} // Ignore unknown parameters
+                    }
+                } else if pair == "force" {
+                    // Bare `force` without `=` means true
+                    params.force = true;
+                }
+            }
+        }
+
+        params
+    }
+
     /// Parse query parameters from URL and create ListParams
     fn parse_list_params(query: Option<&str>) -> ListParams {
         let mut params = ListParams::default();
@@ -268,6 +300,111 @@ impl MockService {
         Ok(())
     }
 
+    /// Apply a patch to a resource, creating it via SSA if it does not exist.
+    ///
+    /// For `ApplyPatch` (Server-Side Apply) on non-status subresources, if the
+    /// resource does not exist the patch body is treated as a new resource and
+    /// created via `tracker().create()`. All other patch types require the
+    /// resource to already exist.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_patch_or_create(
+        &self,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+        patch: &Value,
+        patch_type: PatchType,
+        is_status: bool,
+        api_version: &str,
+        kind: &str,
+        params: &PatchParams,
+    ) -> Result<Value, Error> {
+        match self.client.tracker().get(gvr, namespace, name) {
+            Ok(mut existing) => {
+                // Save managedFields before the merge so a patch body containing
+                // metadata.managedFields cannot overwrite the real ownership state.
+                let saved_managed_fields = existing
+                    .get("metadata")
+                    .and_then(|m| m.get("managedFields"))
+                    .cloned();
+
+                Self::apply_patch(&mut existing, patch, patch_type).map_err(|e| {
+                    match e.downcast::<json_patch::PatchError>() {
+                        Ok(pe) => Error::PatchError(*pe),
+                        Err(e) => Error::Internal(e.to_string()),
+                    }
+                })?;
+
+                if patch_type == PatchType::ApplyPatch {
+                    // Restore pre-merge managedFields for accurate conflict detection.
+                    // If the object had no managedFields before, strip any that the
+                    // patch body may have injected via the merge.
+                    match saved_managed_fields {
+                        Some(mf) => existing["metadata"]["managedFields"] = mf,
+                        None => {
+                            if let Some(meta) =
+                                existing.get_mut("metadata").and_then(|m| m.as_object_mut())
+                            {
+                                meta.remove("managedFields");
+                            }
+                        }
+                    }
+
+                    let subresource = if is_status { "status" } else { "" };
+                    let field_manager = params.field_manager.as_deref().unwrap_or("");
+                    apply_field_ownership(
+                        &mut existing,
+                        patch,
+                        field_manager,
+                        params.force,
+                        api_version,
+                        subresource,
+                    )?;
+                }
+
+                let gvk = extract_gvk(&existing).map_err(|e| Error::Internal(e.to_string()))?;
+                self.client
+                    .tracker()
+                    .update(gvr, &gvk, existing, namespace, is_status)
+            }
+            Err(Error::NotFound { .. }) if patch_type == PatchType::ApplyPatch && !is_status => {
+                let mut obj = patch.clone();
+                if obj.get("apiVersion").is_none() {
+                    obj["apiVersion"] = serde_json::json!(api_version);
+                }
+                if obj.get("kind").is_none() {
+                    obj["kind"] = serde_json::json!(kind);
+                }
+                let metadata = obj
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Internal("patch body is not a JSON object".into()))?
+                    .entry("metadata")
+                    .or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut()
+                    .ok_or_else(|| Error::Internal("metadata is not a JSON object".into()))?;
+                metadata.insert("name".to_string(), serde_json::json!(name));
+                if !namespace.is_empty() {
+                    metadata.insert("namespace".to_string(), serde_json::json!(namespace));
+                }
+
+                let subresource = if is_status { "status" } else { "" };
+                let field_manager = params.field_manager.as_deref().unwrap_or("");
+                apply_field_ownership(
+                    &mut obj,
+                    patch,
+                    field_manager,
+                    params.force,
+                    api_version,
+                    subresource,
+                )?;
+
+                let gvk = extract_gvk(&obj).map_err(|e| Error::Internal(e.to_string()))?;
+                self.client.tracker().create(gvr, &gvk, obj, namespace)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Execute interceptor or default action for GET operations
     fn execute_get_with_interceptor(
         &self,
@@ -357,7 +494,7 @@ impl MockService {
             "POST" => self.handle_post(&path, body_bytes).await,
             "PUT" => self.handle_put(&path, body_bytes).await,
             "PATCH" => {
-                self.handle_patch(&path, body_bytes, content_type.as_deref())
+                self.handle_patch(&path, body_bytes, content_type.as_deref(), query.as_deref())
                     .await
             }
             "DELETE" => {
@@ -596,6 +733,7 @@ impl MockService {
         path: &str,
         body: Bytes,
         content_type: Option<&str>,
+        query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let namespace = Self::extract_namespace(&parsed);
@@ -603,6 +741,20 @@ impl MockService {
 
         let patch: Value = serde_json::from_slice(&body)?;
         let patch_type = Self::determine_patch_type(content_type);
+        let params = Self::parse_patch_params(query);
+
+        // Server-side apply requires a non-empty fieldManager
+        if patch_type == PatchType::ApplyPatch {
+            let has_field_manager = params
+                .field_manager
+                .as_ref()
+                .is_some_and(|fm| !fm.is_empty());
+            if !has_field_manager {
+                return Self::error_to_response(Error::InvalidRequest(
+                    "fieldManager is required for server-side apply".to_string(),
+                ));
+            }
+        }
 
         let gvr = GVR::new(
             parsed.group.clone().unwrap_or_default(),
@@ -610,13 +762,11 @@ impl MockService {
             parsed.resource.clone(),
         );
 
-        let kind = handle_error!(self.resource_to_kind(
-            &parsed.group.clone().unwrap_or_default(),
-            &parsed.version,
-            &parsed.resource
-        ));
-        let gvk = crate::tracker::GVK::new(parsed.group.unwrap_or_default(), parsed.version, &kind);
+        let group = parsed.group.clone().unwrap_or_default();
+        let kind = handle_error!(self.resource_to_kind(&group, &parsed.version, &parsed.resource));
+        let gvk = crate::tracker::GVK::new(group, parsed.version.clone(), &kind);
         let is_status = path.ends_with("/status");
+        let api_version = Self::build_api_version(&parsed.group, &parsed.version);
 
         handle_error!(self.client.validate_verb(&gvk, "patch"));
 
@@ -628,32 +778,39 @@ impl MockService {
                         patch: &patch,
                         namespace: &namespace,
                         name: &name,
-                        params: &PatchParams::default(),
+                        params: &params,
+                        patch_type,
                     };
 
                     match patch_status_interceptor(ctx) {
                         Ok(Some(result)) => result,
                         Ok(None) => {
-                            let mut existing =
-                                handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
-                            Self::apply_patch(&mut existing, &patch, patch_type)?;
-                            let gvk = extract_gvk(&existing)?;
-                            handle_error!(self
-                                .client
-                                .tracker()
-                                .update(&gvr, &gvk, existing, &namespace, true))
+                            handle_error!(self.apply_patch_or_create(
+                                &gvr,
+                                &namespace,
+                                &name,
+                                &patch,
+                                patch_type,
+                                true,
+                                &api_version,
+                                &kind,
+                                &params,
+                            ))
                         }
                         Err(e) => return Self::error_to_response(e),
                     }
                 } else {
-                    let mut existing =
-                        handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
-                    Self::apply_patch(&mut existing, &patch, patch_type)?;
-                    let gvk = extract_gvk(&existing)?;
-                    handle_error!(self
-                        .client
-                        .tracker()
-                        .update(&gvr, &gvk, existing, &namespace, true))
+                    handle_error!(self.apply_patch_or_create(
+                        &gvr,
+                        &namespace,
+                        &name,
+                        &patch,
+                        patch_type,
+                        true,
+                        &api_version,
+                        &kind,
+                        &params,
+                    ))
                 }
             } else if let Some(ref patch_interceptor) = interceptors.patch {
                 let ctx = interceptor::PatchContext {
@@ -661,41 +818,52 @@ impl MockService {
                     patch: &patch,
                     namespace: &namespace,
                     name: &name,
-                    params: &PatchParams::default(),
+                    params: &params,
+                    patch_type,
                 };
 
                 match patch_interceptor(ctx) {
                     Ok(Some(result)) => result,
                     Ok(None) => {
-                        let mut existing =
-                            handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
-                        Self::apply_patch(&mut existing, &patch, patch_type)?;
-                        let gvk = extract_gvk(&existing)?;
-                        handle_error!(self
-                            .client
-                            .tracker()
-                            .update(&gvr, &gvk, existing, &namespace, false))
+                        handle_error!(self.apply_patch_or_create(
+                            &gvr,
+                            &namespace,
+                            &name,
+                            &patch,
+                            patch_type,
+                            false,
+                            &api_version,
+                            &kind,
+                            &params,
+                        ))
                     }
                     Err(e) => return Self::error_to_response(e),
                 }
             } else {
-                let mut existing =
-                    handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
-                Self::apply_patch(&mut existing, &patch, patch_type)?;
-                let gvk = extract_gvk(&existing)?;
-                handle_error!(self
-                    .client
-                    .tracker()
-                    .update(&gvr, &gvk, existing, &namespace, false))
+                handle_error!(self.apply_patch_or_create(
+                    &gvr,
+                    &namespace,
+                    &name,
+                    &patch,
+                    patch_type,
+                    false,
+                    &api_version,
+                    &kind,
+                    &params,
+                ))
             }
         } else {
-            let mut existing = handle_error!(self.client.tracker().get(&gvr, &namespace, &name));
-            Self::apply_patch(&mut existing, &patch, patch_type)?;
-            let gvk = extract_gvk(&existing)?;
-            handle_error!(self
-                .client
-                .tracker()
-                .update(&gvr, &gvk, existing, &namespace, is_status))
+            handle_error!(self.apply_patch_or_create(
+                &gvr,
+                &namespace,
+                &name,
+                &patch,
+                patch_type,
+                is_status,
+                &api_version,
+                &kind,
+                &params,
+            ))
         };
 
         Self::success_response(updated)
