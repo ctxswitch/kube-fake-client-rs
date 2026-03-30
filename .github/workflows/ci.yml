@@ -107,7 +107,7 @@ jobs:
         run: cargo tarpaulin --verbose --no-default-features --features v1_35,validation --workspace --timeout 120 --out xml
 
       - name: upload coverage to codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: ./cobertura.xml
