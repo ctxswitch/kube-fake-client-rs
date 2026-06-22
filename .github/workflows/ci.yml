@@ -19,7 +19,7 @@ jobs:
       matrix:
         features: [v1_31, v1_35, "v1_31,validation", "v1_35,validation"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +56,7 @@ jobs:
           - rust: nightly
             features: v1_35,validation
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: install rust
         uses: dtolnay/rust-toolchain@master
@@ -74,7 +74,7 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
@@ -93,7 +93,7 @@ jobs:
     name: code coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
@@ -117,7 +117,7 @@ jobs:
     name: security audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: install cargo-audit
         uses: taiki-e/install-action@cargo-audit
@@ -129,7 +129,7 @@ jobs:
     name: documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: install rust
         uses: dtolnay/rust-toolchain@stable
