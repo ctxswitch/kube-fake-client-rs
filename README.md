@@ -6,93 +6,69 @@
 [![codecov](https://img.shields.io/codecov/c/github/ctxswitch/kube-fake-client-rs)](https://app.codecov.io/gh/ctxswitch/kube-fake-client-rs)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-In-memory Kubernetes client for testing controllers and operators in Rust. Inspired by [controller-runtime's fake client](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/client/fake) from the Go ecosystem, this library provides a full-featured test client that mimics Kubernetes API behavior without requiring an actual cluster.
+`kube-fake-client` provides an in-memory backend for `kube::Api<K>`, so you can test Rust controllers and operators without a Kubernetes cluster. It is inspired by [controller-runtime's fake client](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/client/fake) for Go.
 
 ## Features
 
-### Core Capabilities
-- **Full CRUD Operations** - Create, read, update, patch, and delete resources with complete `kube::Api<K>` compatibility
-- **Status Subresources** - Separate spec and status updates matching real Kubernetes behavior
-- **Resource Version Tracking** - Automatic versioning with conflict detection for optimistic concurrency
-- **Namespace Isolation** - Proper multi-namespace support with namespace-scoped and cluster-scoped resources
+### Kubernetes behavior
 
-### Advanced Features
-- **Label & Field Selectors** - Filter resources using standard Kubernetes selector syntax with custom indexing
-- **YAML Fixtures** - Load test data from files (single or multi-document YAML)
-- **Custom Resources (CRDs)** - First-class support for custom resource definitions
-- **Interceptors** - Inject custom behavior for error simulation, validation, and action tracking
-- **OpenAPI Schema Validation** - Optional runtime validation against Kubernetes OpenAPI specs (requires `validation` feature)
+- **`kube::Api<K>` operations:** Create, get, list, update, patch, and delete resources through the usual API.
+- **Status subresources:** Configure separate spec and status updates for resource types that use them.
+- **Resource versions:** Assign versions automatically and return conflicts for stale writes.
+- **Namespace scope:** Keep namespaced resources isolated while also supporting cluster-scoped resources.
+- **Selectors and indexes:** Filter with Kubernetes label and field selector syntax, including custom indexes.
+- **Custom resources:** Register custom resource types and use them through `Api<K>`.
 
-### Developer Experience
-- **Drop-in Replacement** - Works seamlessly with existing `kube::Api<K>` code
-- **Type-Safe** - Leverages Rust's type system for compile-time safety
-- **Test-Friendly** - Designed specifically for unit and integration testing workflows
+### Test setup and control
 
-## Installation Instructions
+- **YAML fixtures:** Load single- or multi-document files into the client.
+- **Interceptors:** Inject API errors, validate requests, or record operations.
+- **OpenAPI validation:** Optionally validate resources against Kubernetes schemas with the `validation` feature.
 
-### Basic Setup
+## Installation
 
 Add `kube-fake-client` as a development dependency in your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-kube-fake-client = "0.2"
-kube = { version = "3.0", features = ["client", "derive"] }
-k8s-openapi = { version = "0.27", features = ["v1_31"] }
+kube-fake-client = "0.3"
+kube = { version = "4.2", features = ["client", "derive"] }
+k8s-openapi = { version = "0.28", features = ["v1_36"] }
 tokio = { version = "1.0", features = ["full"] }
 ```
 
-**Note**: By default, `kube-fake-client` uses Kubernetes API version 1.31 (`v1_31`). If you need a different version, see the Kubernetes Version Features section below.
+### Kubernetes versions
 
-### Kubernetes Version Features
+Your `k8s-openapi` feature selects the Kubernetes version. `kube-fake-client` supports these versions:
 
-The library supports multiple Kubernetes API versions through feature flags. **Only one version feature should be enabled at a time**.
+- `v1_32` (or `earliest`): Kubernetes 1.32
+- `v1_33`: Kubernetes 1.33
+- `v1_34`: Kubernetes 1.34
+- `v1_35`: Kubernetes 1.35
+- `v1_36` (or `latest`): Kubernetes 1.36
 
-Available versions:
-- `v1_31` (default) - Kubernetes 1.31 API
-- `v1_32` - Kubernetes 1.32 API
-- `v1_33` - Kubernetes 1.33 API
-- `v1_34` - Kubernetes 1.34 API
-- `v1_35` - Kubernetes 1.35 API
+### Optional OpenAPI validation
 
-To use a specific version, disable default features and enable the desired version:
-
-```toml
-[dev-dependencies]
-kube-fake-client = { version = "0.2", default-features = false, features = ["v1_31"] }
-kube = { version = "3.0", features = ["client", "derive"] }
-k8s-openapi = { version = "0.27", features = ["v1_31"] }
-tokio = { version = "1.0", features = ["full"] }
-```
-
-**Important**: Make sure the k8s-openapi version feature matches the kube-fake-client version feature.
-
-### With OpenAPI Validation (Optional)
-
-To enable runtime schema validation, add the `validation` feature:
+To check resources against their OpenAPI schemas at runtime, enable `validation`:
 
 ```toml
 [dev-dependencies]
-kube-fake-client = { version = "0.2", features = ["validation"] }
-
-# Or with a specific Kubernetes version
-kube-fake-client = { version = "0.2", default-features = false, features = ["v1_32", "validation"] }
+kube-fake-client = { version = "0.3", features = ["validation"] }
 ```
 
-### Dependencies Overview
+### Other dependencies
 
-The library requires:
-- **kube** - Kubernetes client library for Rust (for `Api<K>` types and traits)
-- **k8s-openapi** - Kubernetes API types (Pods, Deployments, etc.)
-- **tokio** - Async runtime (required for async test functions)
+The test crate also needs:
 
-All other dependencies are managed internally by the library.
+- `kube` for `Api<K>` and other client types.
+- `k8s-openapi` for Kubernetes resource types such as Pods and Deployments.
+- `tokio` to run async tests.
 
 ## Usage
 
-### Basic Controller Testing
+### Controller testing
 
-Test a simple controller that adds labels to pods:
+Test a controller that adds a label to a Pod:
 
 ```rust
 use kube_fake_client::ClientBuilder;
@@ -157,9 +133,9 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 }
 ```
 
-### Status Subresource Testing
+### Status subresources
 
-Test controllers that update resource status separately from spec:
+Configure a `Deployment` status subresource:
 
 ```rust
 use k8s_openapi::api::apps::v1::Deployment;
@@ -187,9 +163,9 @@ async fn test_status_update_isolation() -> Result<(), Box<dyn std::error::Error>
 }
 ```
 
-### Loading YAML Fixtures
+### YAML fixtures
 
-Load test data from YAML files:
+Load YAML files as test fixtures:
 
 ```rust
 #[tokio::test]
@@ -209,9 +185,9 @@ async fn test_with_fixtures() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Custom Resources (CRDs)
+### Custom resources
 
-Test operators that work with custom resources:
+Register and fetch a custom resource:
 
 ```rust
 use kube::CustomResource;
@@ -248,9 +224,9 @@ async fn test_custom_resource() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Error Injection with Interceptors
+### Interceptors and error injection
 
-Simulate API errors for testing error handling:
+Fail a Pod create request with an interceptor:
 
 ```rust
 use kube_fake_client::{ClientBuilder, interceptor, Error};
@@ -285,9 +261,9 @@ async fn test_error_handling() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Field Selectors
+### Field selectors
 
-Filter resources using field selectors:
+Filter Pods by `metadata.name`:
 
 ```rust
 use kube::api::ListParams;
@@ -310,17 +286,17 @@ async fn test_field_selectors() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Examples
 
-The [`examples/`](examples/) directory contains comprehensive examples demonstrating various patterns:
+For complete, runnable examples, see [`examples/`](examples/):
 
-- **[basic_usage.rs](examples/basic_usage.rs)** - CRUD operations, label/field selectors, namespaced and cluster-scoped resources
-- **[controller.rs](examples/controller.rs)** - Controller testing pattern with label management
-- **[custom_resource.rs](examples/custom_resource.rs)** - Working with custom resource definitions (CRDs)
-- **[status_controller.rs](examples/status_controller.rs)** - Status subresource handling and separation
-- **[fixture_loading.rs](examples/fixture_loading.rs)** - Loading test data from YAML files
-- **[interceptors.rs](examples/interceptors.rs)** - Error injection and custom behavior
-- **[schema_validations.rs](examples/schema_validations.rs)** - Runtime OpenAPI schema validation (requires `validation` feature)
+- [`basic_usage.rs`](examples/basic_usage.rs): CRUD, label and field selectors, and namespaced and cluster-scoped resources
+- [`controller.rs`](examples/controller.rs): label management during reconciliation
+- [`custom_resource.rs`](examples/custom_resource.rs): custom resource definitions
+- [`status_controller.rs`](examples/status_controller.rs): separate spec and status updates
+- [`fixture_loading.rs`](examples/fixture_loading.rs): YAML fixtures
+- [`interceptors.rs`](examples/interceptors.rs): error injection and custom behavior
+- [`schema_validations.rs`](examples/schema_validations.rs): OpenAPI schema validation (requires `validation`)
 
-#### Running Examples
+#### Run the examples
 
 ```bash
 # Run a specific example
@@ -340,13 +316,7 @@ done
 
 ## Contributing
 
-Contributions are welcome! This project aims to closely follow the behavior of [controller-runtime's fake client](https://github.com/kubernetes-sigs/controller-runtime) while providing an idiomatic Rust experience.
-
-Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development setup
-- Code style guidelines
-- Testing requirements
-- Pull request process
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, tests, and the pull request process.
 
 ## License
 

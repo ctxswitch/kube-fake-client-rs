@@ -24,13 +24,13 @@ check: ## Check the project for errors
 	cargo check --all-targets
 
 clippy: ## Run clippy linter
-	cargo clippy --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 fmt: ## Format code with rustfmt
-	cargo fmt
+	cargo fmt --all
 
 fmt-check: ## Check code formatting without modifying files
-	cargo fmt -- --check
+	cargo fmt --all -- --check
 
 clean: ## Clean build artifacts
 	cargo clean
@@ -103,9 +103,9 @@ changelog-tag: ## Generate changelog for the current version tag
 	echo "✓ Generated RELEASE_NOTES.md for v$$VERSION"
 
 generate: ## Run code generators (discovery + immutable)
-	cargo run --bin discovery-gen
-	cargo run --bin immutable-gen
-	cargo fmt
+	cargo run -p xtask --bin discovery-gen
+	cargo run -p xtask --bin immutable-gen
+	cargo fmt --all
 
 bench: ## Run benchmarks
 	cargo bench

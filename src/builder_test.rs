@@ -97,6 +97,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_load_fixture_yaml_1_1_octal_and_empty_documents() {
+        let client = ClientBuilder::new()
+            .with_fixture_dir("fixtures")
+            .load_fixture("octal-mode.yaml")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let pod = pods.get("octal-pod").await.unwrap();
+        let volumes = pod.spec.unwrap().volumes.unwrap();
+        assert_eq!(
+            volumes[0].secret.as_ref().unwrap().default_mode,
+            Some(0o644)
+        );
+    }
+
+    #[tokio::test]
     async fn test_load_fixture_or_panic() {
         let client = ClientBuilder::new()
             .with_fixture_dir("fixtures")
