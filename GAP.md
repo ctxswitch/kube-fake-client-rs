@@ -28,6 +28,7 @@ Snapshot date: 2026-10-08.
 | `gracePeriodSeconds` (delete) | Supported | Exposed in `DeleteParams.grace_period_seconds` | Ignored | Missing in fake |
 | Delete body decode errors | Invalid body should fail request | Sends body from `DeleteParams` | Malformed body returns 400 | Aligned |
 | Delete preconditions | Supported (`uid`, `resourceVersion`) | Exposed in `DeleteParams.preconditions` | Not enforced in delete handler | Missing in fake |
+| Subresources other than `status` (`log`, `eviction`, `token`, `ephemeralcontainers`, `resize`, `scale`, custom) | Each has its own handler; unknown subresource => 404 NotFound; wrong verb on a known subresource => 405 | `Api::logs`, `evict`, `create_token_request`, `get_subresource` / `patch_subresource` / `replace_subresource` build `.../{name}/{subresource}` | Only `status` is routed (GET/PUT/PATCH). Every other (verb, subresource) pair returns 404 NotFound before verb validation, interceptors or tracker access; parent is untouched | No handlers for other subresources (`scale` tracked in #106); POST/DELETE on `status` return 404 rather than 405 |
 
 ## Gap Details
 
@@ -49,6 +50,12 @@ Snapshot date: 2026-10-08.
 5. Delete behavior is improved but still not full fidelity.
 - Good: query+body parsing for propagation/orphan, enum checks, mutual exclusivity, malformed-body 400.
 - Missing: `gracePeriodSeconds`, preconditions, and distinct foreground/background lifecycle behavior.
+
+6. Only the `status` subresource is routed.
+- `GET`, `PUT` and `PATCH` on `status` are handled. `.../pods/status` addresses an object named `status`.
+- Every other (verb, subresource) pair (`log`, `eviction`, `token`, `ephemeralcontainers`, `resize`, `scale`, custom) returns 404 `NotFound` before verb validation, interceptors or tracker access; the parent object is untouched.
+- `POST` and `DELETE` on `status` return 404 where kube-apiserver returns 405.
+- Missing: handlers for subresources other than `status` (`scale` tracked in #106).
 
 ## Key Evidence
 

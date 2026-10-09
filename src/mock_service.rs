@@ -45,6 +45,8 @@ struct ParsedPath {
     namespace: Option<String>,
     resource: String,
     name: Option<String>,
+    /// Path segments after the object name, joined with `/`.
+    subresource: Option<String>,
 }
 
 /// Patch types based on Content-Type header
@@ -72,11 +74,17 @@ impl MockService {
     }
 
     /// Parse URL path to extract API info
+    ///
     /// Examples:
-    /// - /api/v1/namespaces/default/pods (namespaced)
-    /// - /api/v1/namespaces/default/pods/my-pod (namespaced with name)
-    /// - /apis/apps/v1/namespaces/default/deployments (namespaced with group)
-    /// - /api/v1/nodes (cluster-scoped)
+    /// - `/api/v1/namespaces/default/pods` (namespaced)
+    /// - `/api/v1/namespaces/default/pods/my-pod` (namespaced with name)
+    /// - `/api/v1/namespaces/default/pods/my-pod/status` (namespaced with subresource `status`)
+    /// - `/apis/apps/v1/namespaces/default/deployments` (namespaced with group)
+    /// - `/api/v1/nodes` (cluster-scoped)
+    /// - `/api/v1/nodes/my-node/proxy` (cluster-scoped with subresource `proxy`)
+    ///
+    /// Segments after the subresource are joined with `/`, so
+    /// `/api/v1/namespaces/default/pods/my-pod/status/extra` yields subresource `status/extra`.
     fn parse_path(path: &str) -> Option<ParsedPath> {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -113,6 +121,10 @@ impl MockService {
                 namespace: Some(parts[version_idx + 2].to_string()),
                 resource: parts[version_idx + 3].to_string(),
                 name: parts.get(version_idx + 4).map(|s| s.to_string()),
+                subresource: parts
+                    .get(version_idx + 5..)
+                    .filter(|rest| !rest.is_empty())
+                    .map(|rest| rest.join("/")),
             })
         } else {
             // Cluster-scoped resource: /api/v1/{resource}[/{name}]
@@ -122,8 +134,18 @@ impl MockService {
                 namespace: None,
                 resource: parts[version_idx + 1].to_string(),
                 name: parts.get(version_idx + 2).map(|s| s.to_string()),
+                subresource: parts
+                    .get(version_idx + 3..)
+                    .filter(|rest| !rest.is_empty())
+                    .map(|rest| rest.join("/")),
             })
         }
+    }
+
+    /// Whether the fake handles `method` on `subresource`. Only `status` with GET, PUT or PATCH is
+    /// handled; every other pair returns 404.
+    fn is_implemented_subresource(method: &str, subresource: &str) -> bool {
+        subresource == "status" && matches!(method, "GET" | "PUT" | "PATCH")
     }
 
     /// Convert resource plural to Kind using discovery + registry
@@ -518,6 +540,14 @@ impl MockService {
             collected.to_bytes()
         };
 
+        if let Some(parsed) = Self::parse_path(&path) {
+            if let Some(sub) = parsed.subresource.as_deref() {
+                if !Self::is_implemented_subresource(method.as_str(), sub) {
+                    return Self::subresource_not_found_response(&parsed, sub);
+                }
+            }
+        }
+
         // Route based on HTTP method
         match method.as_str() {
             "GET" => self.handle_get(&path, query.as_deref()).await,
@@ -541,6 +571,7 @@ impl MockService {
         query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
+        let is_status = parsed.subresource.as_deref() == Some("status");
         let namespace = Self::extract_namespace(&parsed);
         let kind = handle_error!(self.resource_to_kind(
             &parsed.group.clone().unwrap_or_default(),
@@ -563,7 +594,6 @@ impl MockService {
         if let Some(name) = parsed.name {
             // GET single object
             handle_error!(self.client.validate_verb(&gvk, "get"));
-            let is_status = path.ends_with("/status");
 
             let obj = handle_error!(
                 self.execute_get_with_interceptor(&gvr, &namespace, &name, is_status)
@@ -671,6 +701,7 @@ impl MockService {
         body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
+        let is_status = parsed.subresource.as_deref() == Some("status");
         let namespace = Self::extract_namespace(&parsed);
         let name = parsed.name.as_ref().ok_or("Name required for PUT")?;
 
@@ -696,7 +727,6 @@ impl MockService {
             parsed.resource,
         );
         let gvk = extract_gvk(&obj)?;
-        let is_status = path.ends_with("/status");
 
         handle_error!(self.client.validate_verb(&gvk, "update"));
 
@@ -766,6 +796,7 @@ impl MockService {
         query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let parsed = Self::parse_path(path).ok_or("Invalid path")?;
+        let is_status = parsed.subresource.as_deref() == Some("status");
         let namespace = Self::extract_namespace(&parsed);
         let name = parsed.name.ok_or("Name required for PATCH")?;
 
@@ -795,7 +826,6 @@ impl MockService {
         let group = parsed.group.clone().unwrap_or_default();
         let kind = handle_error!(self.resource_to_kind(&group, &parsed.version, &parsed.resource));
         let gvk = crate::tracker::GVK::new(group, parsed.version.clone(), &kind);
-        let is_status = path.ends_with("/status");
         let api_version = Self::build_api_version(&parsed.group, &parsed.version);
 
         handle_error!(self.client.validate_verb(&gvk, "patch"));
@@ -1111,6 +1141,31 @@ impl MockService {
 
         Ok(Response::builder()
             .status(status)
+            .header("Content-Type", CONTENT_TYPE_JSON)
+            .body(Full::new(Bytes::from(body.to_string())))
+            .expect("Failed to build response"))
+    }
+
+    /// 404 `Status` for a subresource the fake does not implement.
+    fn subresource_not_found_response(
+        parsed: &ParsedPath,
+        subresource: &str,
+    ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+        let resource = &parsed.resource;
+        let name = parsed.name.as_deref().unwrap_or_default();
+        let body = serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": format!(
+                "the server could not find the requested resource ({resource}/{subresource} \"{name}\")"
+            ),
+            "reason": "NotFound",
+            "code": 404
+        });
+
+        Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
             .header("Content-Type", CONTENT_TYPE_JSON)
             .body(Full::new(Bytes::from(body.to_string())))
             .expect("Failed to build response"))
