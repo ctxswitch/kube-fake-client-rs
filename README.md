@@ -44,7 +44,13 @@ tokio = { version = "1.0", features = ["full"] }
 
 ### Kubernetes Versions
 
-`kube-fake-client` uses the Kubernetes version that your `k8s-openapi` feature selects: `v1_32` through `v1_36`, `earliest`, or `latest`.
+`kube-fake-client` uses the Kubernetes version that your `k8s-openapi` feature selects. Supported versions:
+
+- `v1_32` (or `earliest`) - Kubernetes 1.32
+- `v1_33` - Kubernetes 1.33
+- `v1_34` - Kubernetes 1.34
+- `v1_35` - Kubernetes 1.35
+- `v1_36` (or `latest`) - Kubernetes 1.36
 
 ### With OpenAPI Validation (Optional)
 
