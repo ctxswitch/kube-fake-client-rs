@@ -36,36 +36,17 @@ Add `kube-fake-client` as a development dependency in your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-kube-fake-client = "0.2"
-kube = { version = "3.0", features = ["client", "derive"] }
-k8s-openapi = { version = "0.27", features = ["v1_31"] }
+kube-fake-client = "0.3"
+kube = { version = "4.2", features = ["client", "derive"] }
+k8s-openapi = { version = "0.28", features = ["v1_36"] }
 tokio = { version = "1.0", features = ["full"] }
 ```
 
-**Note**: By default, `kube-fake-client` uses Kubernetes API version 1.31 (`v1_31`). If you need a different version, see the Kubernetes Version Features section below.
+### Kubernetes Versions
 
-### Kubernetes Version Features
+`kube-fake-client` has no Kubernetes version features. It uses the version that your `k8s-openapi` dependency selects, so any version that `k8s-openapi` 0.28 supports works: `v1_32` through `v1_36`, or `earliest` / `latest`. The built-in discovery data and immutable-field data include the resources of all of these versions.
 
-The library supports multiple Kubernetes API versions through feature flags. **Only one version feature should be enabled at a time**.
-
-Available versions:
-- `v1_31` (default) - Kubernetes 1.31 API
-- `v1_32` - Kubernetes 1.32 API
-- `v1_33` - Kubernetes 1.33 API
-- `v1_34` - Kubernetes 1.34 API
-- `v1_35` - Kubernetes 1.35 API
-
-To use a specific version, disable default features and enable the desired version:
-
-```toml
-[dev-dependencies]
-kube-fake-client = { version = "0.2", default-features = false, features = ["v1_31"] }
-kube = { version = "3.0", features = ["client", "derive"] }
-k8s-openapi = { version = "0.27", features = ["v1_31"] }
-tokio = { version = "1.0", features = ["full"] }
-```
-
-**Important**: Make sure the k8s-openapi version feature matches the kube-fake-client version feature.
+Enable exactly one version feature on `k8s-openapi`. If your crate is a library, enable it on the `k8s-openapi` dev-dependency only; see the [k8s-openapi documentation](https://docs.rs/k8s-openapi) for details.
 
 ### With OpenAPI Validation (Optional)
 
@@ -73,10 +54,7 @@ To enable runtime schema validation, add the `validation` feature:
 
 ```toml
 [dev-dependencies]
-kube-fake-client = { version = "0.2", features = ["validation"] }
-
-# Or with a specific Kubernetes version
-kube-fake-client = { version = "0.2", default-features = false, features = ["v1_32", "validation"] }
+kube-fake-client = { version = "0.3", features = ["validation"] }
 ```
 
 ### Dependencies Overview

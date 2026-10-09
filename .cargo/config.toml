@@ -1,0 +1,5 @@
+# k8s-openapi needs one Kubernetes version to build. The library leaves the
+# choice to the final crate, so builds inside this repository select one here.
+# An exported K8S_OPENAPI_ENABLED_VERSION takes precedence.
+[env]
+K8S_OPENAPI_ENABLED_VERSION = "1.36"

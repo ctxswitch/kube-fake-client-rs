@@ -6,48 +6,56 @@
 //! The generator parses the Kubernetes OpenAPI schema (swagger.json) and identifies fields
 //! whose descriptions contain the word "immutable".
 //!
+//! The generated lookups cover every release in `xtask::RELEASES`: a field is immutable
+//! if it is immutable in any of those releases. The generator prints a warning when a
+//! field is immutable in one release and mutable in another.
+//!
+//! Each release reads `kubernetes/api/openapi/<minor>/swagger.json` and fetches the
+//! file from the Kubernetes GitHub repo when it is missing.
+//!
 //! # Usage
 //!
-//! Generate immutable field lookups from local swagger.json:
+//! Generate immutable field lookups from local swagger.json files:
 //! ```bash
-//! cargo run --bin immutable-gen
+//! cargo run -p xtask --bin immutable-gen
 //! ```
 //!
-//! Update swagger.json from Kubernetes GitHub repo:
+//! Fetch swagger.json for every release again, then generate:
 //! ```bash
-//! cargo run --bin immutable-gen -- --update
-//! ```
-//!
-//! Target a specific Kubernetes version:
-//! ```bash
-//! cargo run --bin immutable-gen -- --update --tag v1.31.0
+//! cargo run -p xtask --bin immutable-gen -- --update
 //! ```
 
 use clap::Parser;
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tera::{Context, Tera};
+use xtask::{fetch_file, release_dir, RELEASES};
 
-// Directory and file paths for Kubernetes OpenAPI schema
+// Directory and file names for Kubernetes OpenAPI schema
 const OPENAPI_DIR: &str = "kubernetes/api/openapi";
-const OPENAPI_FILE: &str = "kubernetes/api/openapi/swagger.json";
+const OPENAPI_FILE: &str = "swagger.json";
 
-// GitHub repository configuration
-const GITHUB_RAW_BASE: &str = "https://raw.githubusercontent.com/kubernetes/kubernetes";
 const USER_AGENT: &str = "kube-fake-client-immutable-gen";
+
+/// Definition key: (group, version, kind)
+type DefinitionKey = (String, String, String);
+
+/// Fields of one OpenAPI definition in one release
+#[derive(Default)]
+struct DefinitionFields {
+    all: BTreeSet<String>,
+    immutable: BTreeSet<String>,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "immutable-gen")]
 #[command(about = "Generate immutable field lookups from OpenAPI schema", long_about = None)]
 struct Args {
-    /// Update OpenAPI schema from Kubernetes GitHub repository
+    /// Fetch the OpenAPI schema for every release from the Kubernetes GitHub repository
     #[arg(short, long)]
     update: bool,
-
-    /// Git tag or SHA to fetch from (default: master)
-    #[arg(short, long, default_value = "master")]
-    tag: String,
 
     /// Output directory for generated code (default: src/gen)
     #[arg(short, long, default_value = "src/gen")]
@@ -66,27 +74,30 @@ struct ImmutableFieldInfo {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Ensure directories exist
-    fs::create_dir_all(OPENAPI_DIR)?;
     fs::create_dir_all(&args.output)?;
 
-    // Check if swagger.json exists
-    let swagger_path = Path::new(OPENAPI_FILE);
-    let file_exists = swagger_path.exists();
+    let mut releases = Vec::new();
+    for tag in RELEASES {
+        let swagger_path = release_dir(OPENAPI_DIR, tag).join(OPENAPI_FILE);
 
-    // Fetch file if --update is specified or file doesn't exist
-    if args.update || !file_exists {
-        println!(
-            "Fetching OpenAPI schema from Kubernetes GitHub repo (tag: {})...",
-            args.tag
-        );
-        fetch_openapi_file(&args.tag)?;
-        println!("OpenAPI schema updated successfully");
+        if args.update || !swagger_path.exists() {
+            println!(
+                "Fetching OpenAPI schema from Kubernetes GitHub repo (tag: {})...",
+                tag
+            );
+            fetch_file(
+                USER_AGENT,
+                tag,
+                "api/openapi-spec/swagger.json",
+                &swagger_path,
+            )?;
+        }
+
+        println!("Parsing {} for immutable fields...", swagger_path.display());
+        releases.push((*tag, parse_definitions(&swagger_path)?));
     }
 
-    // Parse OpenAPI schema for immutable fields
-    println!("Parsing OpenAPI schema for immutable fields...");
-    let immutable_fields = parse_immutable_fields()?;
+    let immutable_fields = merge_releases(&releases);
     println!(
         "Found {} definitions with immutable fields",
         immutable_fields.len()
@@ -101,49 +112,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Create an HTTP client for fetching files from GitHub
-fn create_http_client() -> Result<reqwest::blocking::Client, Box<dyn std::error::Error>> {
-    reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e).into())
-}
-
-/// Fetch a file from GitHub and save it to disk
-fn fetch_file(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    save_path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Fetching {}...", url);
-    let response = client.get(url).send()?;
-
-    if !response.status().is_success() {
-        return Err(format!("Failed to fetch {}: HTTP {}", url, response.status()).into());
-    }
-
-    let content = response.text()?;
-    fs::write(save_path, content)?;
-    Ok(())
-}
-
-/// Fetch OpenAPI swagger file from Kubernetes GitHub repository
-fn fetch_openapi_file(tag: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let client = create_http_client()?;
-
-    let swagger_url = format!("{}/{}/api/openapi-spec/swagger.json", GITHUB_RAW_BASE, tag);
-    fetch_file(&client, &swagger_url, OPENAPI_FILE)?;
-
-    Ok(())
-}
-
 /// Parse OpenAPI definition name to extract (group, version, kind)
 ///
 /// Examples:
 /// - "io.k8s.api.batch.v1.JobSpec" -> ("batch", "v1", "JobSpec")
 /// - "io.k8s.api.core.v1.PodSpec" -> ("", "v1", "PodSpec")  // core is empty group
 /// - "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta" -> ("", "v1", "ObjectMeta")
-fn parse_definition_name(def_name: &str) -> Result<(String, String, String), String> {
+fn parse_definition_name(def_name: &str) -> Result<DefinitionKey, String> {
     if let Some(rest) = def_name.strip_prefix("io.k8s.api.") {
         // Standard resource: io.k8s.api.{group}.{version}.{Kind}
         let parts: Vec<&str> = rest.split('.').collect();
@@ -179,95 +154,129 @@ fn parse_definition_name(def_name: &str) -> Result<(String, String, String), Str
     }
 }
 
-/// Parse OpenAPI swagger.json to find immutable fields
-fn parse_immutable_fields() -> Result<Vec<ImmutableFieldInfo>, Box<dyn std::error::Error>> {
+/// Parse one swagger.json into the fields of each definition that has immutable fields
+fn parse_definitions(
+    path: &Path,
+) -> Result<BTreeMap<DefinitionKey, DefinitionFields>, Box<dyn std::error::Error>> {
     use serde_json::Value;
 
-    // Load swagger.json
-    let content = fs::read_to_string(OPENAPI_FILE)
-        .map_err(|e| format!("Failed to read {}: {}", OPENAPI_FILE, e))?;
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
     let swagger: Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse {}: {}", OPENAPI_FILE, e))?;
+        .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
 
     let definitions = swagger
         .get("definitions")
         .and_then(|d| d.as_object())
         .ok_or("OpenAPI spec missing 'definitions'")?;
 
-    let mut immutable_info = Vec::new();
+    let mut parsed = BTreeMap::new();
 
-    // Add common immutable fields from ObjectMeta
-    // These are immutable after creation but may not have "immutable" in their descriptions
-    immutable_info.push(ImmutableFieldInfo {
-        group: "".to_string(),
-        version: "v1".to_string(),
-        kind: "ObjectMeta".to_string(),
-        fields: vec![
-            "creationTimestamp".to_string(),
-            "generateName".to_string(),
-            "generation".to_string(),
-            "name".to_string(),
-            "namespace".to_string(),
-            "uid".to_string(),
-        ],
-    });
-
-    // Scan each definition for immutable fields
     for (def_name, def_obj) in definitions {
-        if let Some(properties) = def_obj.get("properties").and_then(|p| p.as_object()) {
-            let mut immutable_fields = Vec::new();
+        let Some(properties) = def_obj.get("properties").and_then(|p| p.as_object()) else {
+            continue;
+        };
 
-            for (field_name, field_obj) in properties {
-                // Skip fields named "immutable" - these are control flags, not immutable fields
-                if field_name == "immutable" {
-                    continue;
-                }
+        let mut fields = DefinitionFields::default();
+        for (field_name, field_obj) in properties {
+            fields.all.insert(field_name.clone());
 
-                if let Some(description) = field_obj.get("description").and_then(|d| d.as_str()) {
-                    // Check if the description mentions "immutable" (case-insensitive)
-                    if description.to_lowercase().contains("immutable") {
-                        immutable_fields.push(field_name.clone());
-                    }
-                }
+            // Skip fields named "immutable" - these are control flags, not immutable fields
+            if field_name == "immutable" {
+                continue;
             }
 
-            // Only include definitions that have immutable fields
-            if !immutable_fields.is_empty() {
-                // Parse the definition name to extract group, version, kind
-                match parse_definition_name(def_name) {
-                    Ok((group, version, kind)) => {
-                        immutable_info.push(ImmutableFieldInfo {
-                            group,
-                            version,
-                            kind,
-                            fields: immutable_fields,
-                        });
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Skipping definition '{}': {}", def_name, e);
-                    }
+            if let Some(description) = field_obj.get("description").and_then(|d| d.as_str()) {
+                // Check if the description mentions "immutable" (case-insensitive)
+                if description.to_lowercase().contains("immutable") {
+                    fields.immutable.insert(field_name.clone());
+                }
+            }
+        }
+
+        match parse_definition_name(def_name) {
+            Ok(key) => {
+                parsed.insert(key, fields);
+            }
+            Err(e) if !fields.immutable.is_empty() => {
+                eprintln!("Warning: Skipping definition '{}': {}", def_name, e);
+            }
+            Err(_) => {}
+        }
+    }
+
+    Ok(parsed)
+}
+
+/// Merge the immutable fields of every release, sorted by (group, version, kind)
+fn merge_releases(
+    releases: &[(&str, BTreeMap<DefinitionKey, DefinitionFields>)],
+) -> Vec<ImmutableFieldInfo> {
+    let mut merged: BTreeMap<DefinitionKey, BTreeSet<String>> = BTreeMap::new();
+
+    for (_, definitions) in releases {
+        for (key, fields) in definitions {
+            if !fields.immutable.is_empty() {
+                merged
+                    .entry(key.clone())
+                    .or_default()
+                    .extend(fields.immutable.iter().cloned());
+            }
+        }
+    }
+
+    // A field that a release serves without "immutable" in its description
+    // is mutable in that release.
+    for (key, immutable) in &merged {
+        for (tag, definitions) in releases {
+            let Some(fields) = definitions.get(key) else {
+                continue;
+            };
+            for field in immutable {
+                if fields.all.contains(field) && !fields.immutable.contains(field) {
+                    eprintln!(
+                        "Warning: {}/{}/{} field '{}' is mutable in {} but immutable in another release",
+                        key.0, key.1, key.2, field, tag
+                    );
                 }
             }
         }
     }
 
-    // Sort by (group, version, kind) for consistent output
-    immutable_info.sort_by(|a, b| {
-        a.group
-            .cmp(&b.group)
-            .then(a.version.cmp(&b.version))
-            .then(a.kind.cmp(&b.kind))
-    });
+    // Add common immutable fields from ObjectMeta
+    // These are immutable after creation but may not have "immutable" in their descriptions
+    merged
+        .entry(("".to_string(), "v1".to_string(), "ObjectMeta".to_string()))
+        .or_default()
+        .extend(
+            [
+                "creationTimestamp",
+                "generateName",
+                "generation",
+                "name",
+                "namespace",
+                "uid",
+            ]
+            .map(String::from),
+        );
 
-    Ok(immutable_info)
+    merged
+        .into_iter()
+        .map(|((group, version, kind), fields)| ImmutableFieldInfo {
+            group,
+            version,
+            kind,
+            fields: fields.into_iter().collect(),
+        })
+        .collect()
 }
 
 /// Template for generating immutable.rs
 const IMMUTABLE_TEMPLATE: &str = r#"//! Auto-generated immutable field lookups
 //!
 //! This file is generated by the immutable-gen binary and should not be edited manually.
-//! To regenerate: cargo run --bin immutable-gen
+//! To regenerate: cargo run -p xtask --bin immutable-gen
 //!
 //! Immutable fields are fields that cannot be changed after resource creation.
 //! This module provides lookups to check if a field in a Kubernetes resource is immutable.

@@ -3,23 +3,24 @@
 //! This binary generates Rust code from Kubernetes API discovery metadata.
 //! Discovery data includes resource metadata, GVK mappings, verbs, and subresources.
 //!
-//! It can either use local JSON files or fetch them directly from the Kubernetes GitHub repo.
+//! The generated lookups cover every release in `xtask::RELEASES`. A resource
+//! present in any release is known; its verbs, subresources, and short names are
+//! the union over those releases, and its other metadata comes from the newest
+//! release that serves it.
+//!
+//! Each release reads `kubernetes/api/discovery/<minor>/` and fetches the files
+//! from the Kubernetes GitHub repo when they are missing.
 //!
 //! # Usage
 //!
 //! Generate discovery code from local files:
 //! ```bash
-//! cargo run --bin discovery-gen
+//! cargo run -p xtask --bin discovery-gen
 //! ```
 //!
-//! Update discovery data from Kubernetes GitHub repo:
+//! Fetch discovery data for every release again, then generate:
 //! ```bash
-//! cargo run --bin discovery-gen -- --update
-//! ```
-//!
-//! Target a specific Kubernetes version:
-//! ```bash
-//! cargo run --bin discovery-gen -- --update --tag v1.31.0
+//! cargo run -p xtask --bin discovery-gen -- --update
 //! ```
 
 use clap::Parser;
@@ -28,25 +29,21 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tera::{Context, Tera};
+use xtask::{fetch_file, release_dir, RELEASES};
 
 // Directory paths for Kubernetes API files
 const DISCOVERY_DIR: &str = "kubernetes/api/discovery";
+const DISCOVERY_FILES: [&str; 2] = ["api__v1.json", "aggregated_v2.json"];
 
-// GitHub repository configuration
-const GITHUB_RAW_BASE: &str = "https://raw.githubusercontent.com/kubernetes/kubernetes";
 const USER_AGENT: &str = "kube-fake-client-discovery-gen";
 
 #[derive(Parser, Debug)]
 #[command(name = "discovery-gen")]
 #[command(about = "Generate Kubernetes discovery code from JSON files", long_about = None)]
 struct Args {
-    /// Update discovery data from Kubernetes GitHub repository
+    /// Fetch discovery data for every release from the Kubernetes GitHub repository
     #[arg(short, long)]
     update: bool,
-
-    /// Git tag or SHA to fetch from (default: master)
-    #[arg(short, long, default_value = "master")]
-    tag: String,
 
     /// Output directory for generated code (default: src/gen)
     #[arg(short, long, default_value = "src/gen")]
@@ -164,86 +161,37 @@ struct Subresource {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Ensure directories exist
-    fs::create_dir_all(DISCOVERY_DIR)?;
     fs::create_dir_all(&args.output)?;
 
-    // Check if discovery files exist
-    let aggregated_path = Path::new(DISCOVERY_DIR).join("aggregated_v2.json");
-    let core_path = Path::new(DISCOVERY_DIR).join("api__v1.json");
-    let files_exist = aggregated_path.exists() && core_path.exists();
+    for tag in RELEASES {
+        let dir = release_dir(DISCOVERY_DIR, tag);
+        let files_exist = DISCOVERY_FILES.iter().all(|file| dir.join(file).exists());
 
-    // Fetch files if --update is specified or files don't exist
-    if args.update || !files_exist {
-        println!(
-            "Fetching discovery data from Kubernetes GitHub repo (tag: {})...",
-            args.tag
-        );
-        fetch_discovery_files(&args.tag)?;
-        println!("Discovery data updated successfully");
+        if args.update || !files_exist {
+            println!(
+                "Fetching discovery data from Kubernetes GitHub repo (tag: {})...",
+                tag
+            );
+            for file in DISCOVERY_FILES {
+                fetch_file(
+                    USER_AGENT,
+                    tag,
+                    &format!("api/discovery/{}", file),
+                    &dir.join(file),
+                )?;
+            }
+        }
     }
 
     // Parse and generate discovery code
     println!("Parsing discovery data...");
-    let resources = parse_discovery_files()?;
-    println!("Parsed {} resources", resources.len());
+    let resources = merge_releases()?;
+    println!("Merged {} resources", resources.len());
 
     println!("Generating discovery code...");
     let output_path = args.output.join("discovery.rs");
     generate_discovery_code(&resources, &output_path)?;
     println!("Generated code written to {}", output_path.display());
-
-    Ok(())
-}
-
-/// Create an HTTP client for fetching files from GitHub
-fn create_http_client() -> Result<reqwest::blocking::Client, Box<dyn std::error::Error>> {
-    reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e).into())
-}
-
-/// Fetch a file from GitHub and save it to disk
-fn fetch_file(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    save_path: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Fetching {}...", url);
-    let response = client.get(url).send()?;
-
-    if !response.status().is_success() {
-        return Err(format!("Failed to fetch {}: HTTP {}", url, response.status()).into());
-    }
-
-    let content = response.text()?;
-    fs::write(save_path, content)?;
-    Ok(())
-}
-
-/// Fetch discovery files from Kubernetes GitHub repository
-fn fetch_discovery_files(tag: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let client = create_http_client()?;
-
-    // Fetch aggregated_v2.json
-    let aggregated_url = format!(
-        "{}/{}/api/discovery/aggregated_v2.json",
-        GITHUB_RAW_BASE, tag
-    );
-    fetch_file(
-        &client,
-        &aggregated_url,
-        &format!("{}/aggregated_v2.json", DISCOVERY_DIR),
-    )?;
-
-    // Fetch api__v1.json
-    let core_url = format!("{}/{}/api/discovery/api__v1.json", GITHUB_RAW_BASE, tag);
-    fetch_file(
-        &client,
-        &core_url,
-        &format!("{}/api__v1.json", DISCOVERY_DIR),
-    )?;
 
     Ok(())
 }
@@ -272,8 +220,8 @@ fn extract_core_subresources(resources: &[CoreAPIResource]) -> HashMap<String, V
 }
 
 /// Parse the core API (v1) discovery file
-fn parse_core_api() -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
-    let path = Path::new(DISCOVERY_DIR).join("api__v1.json");
+fn parse_core_api(dir: &Path) -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
+    let path = dir.join("api__v1.json");
     let content = fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
@@ -318,8 +266,10 @@ fn parse_core_api() -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>>
 }
 
 /// Parse the aggregated discovery file
-fn parse_aggregated_discovery() -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
-    let path = Path::new(DISCOVERY_DIR).join("aggregated_v2.json");
+fn parse_aggregated_discovery(
+    dir: &Path,
+) -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
+    let path = dir.join("aggregated_v2.json");
     let content = fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
@@ -366,17 +316,17 @@ fn parse_aggregated_discovery() -> Result<Vec<ResourceMetadata>, Box<dyn std::er
     Ok(resources)
 }
 
-/// Parse all discovery files and return combined resource metadata
-fn parse_discovery_files() -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
+/// Parse the discovery files of one release and return combined resource metadata
+fn parse_discovery_files(dir: &Path) -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
     let mut resources = Vec::new();
 
     // Parse core API (v1)
-    let core_resources = parse_core_api()?;
+    let core_resources = parse_core_api(dir)?;
     println!("Parsed {} core API resources", core_resources.len());
     resources.extend(core_resources);
 
     // Parse aggregated discovery (all other API groups)
-    let aggregated_resources = parse_aggregated_discovery()?;
+    let aggregated_resources = parse_aggregated_discovery(dir)?;
     println!(
         "Parsed {} aggregated API resources",
         aggregated_resources.len()
@@ -386,11 +336,67 @@ fn parse_discovery_files() -> Result<Vec<ResourceMetadata>, Box<dyn std::error::
     Ok(resources)
 }
 
+/// Merge the resources of every release in `RELEASES`.
+///
+/// The newest release that serves a resource sets its position and metadata.
+/// Older releases add the verbs, subresources, and short names that it lacks.
+fn merge_releases() -> Result<Vec<ResourceMetadata>, Box<dyn std::error::Error>> {
+    let mut merged: Vec<ResourceMetadata> = Vec::new();
+    let mut index: HashMap<(String, String, String), usize> = HashMap::new();
+
+    for tag in RELEASES {
+        println!("Release {}:", tag);
+        for resource in parse_discovery_files(&release_dir(DISCOVERY_DIR, tag))? {
+            let key = (
+                resource.group.clone(),
+                resource.version.clone(),
+                resource.kind.clone(),
+            );
+            let Some(&position) = index.get(&key) else {
+                index.insert(key, merged.len());
+                merged.push(resource);
+                continue;
+            };
+
+            let existing = &mut merged[position];
+            if existing.plural != resource.plural || existing.namespaced != resource.namespaced {
+                eprintln!(
+                    "Warning: {}/{}/{} has a different plural or scope in {}; keeping the newer one",
+                    resource.group, resource.version, resource.kind, tag
+                );
+            }
+            union(&mut existing.verbs, resource.verbs);
+            union(&mut existing.short_names, resource.short_names);
+            for sub in resource.subresources {
+                match existing
+                    .subresources
+                    .iter_mut()
+                    .find(|s| s.name == sub.name)
+                {
+                    Some(existing_sub) => union(&mut existing_sub.verbs, sub.verbs),
+                    None => existing.subresources.push(sub),
+                }
+            }
+        }
+    }
+
+    Ok(merged)
+}
+
+/// Append each item of `from` that `into` does not already contain.
+fn union(into: &mut Vec<String>, from: Vec<String>) {
+    for item in from {
+        if !into.contains(&item) {
+            into.push(item);
+        }
+    }
+}
+
 /// Template for generating discovery.rs
 const TEMPLATE: &str = r#"// Auto-generated Kubernetes resource discovery metadata
 //
 // This file is generated by the discovery-gen binary and should not be edited manually.
-// To regenerate: cargo run --bin discovery-gen
+// To regenerate: cargo run -p xtask --bin discovery-gen
 
 /// Returns whether a resource is namespaced, or `None` if the resource is unknown.
 pub fn is_namespaced(group: &str, version: &str, kind: &str) -> Option<bool> {

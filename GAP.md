@@ -2,15 +2,15 @@
 
 This document compares behavior across:
 
-- Kubernetes swagger / kube-apiserver semantics (`kubernetes/api/openapi/swagger.json`)
-- `kube.rs` client behavior (currently `kube-core 3.0.1` in this repo)
+- Kubernetes swagger / kube-apiserver semantics (`kubernetes/api/openapi/<release>/swagger.json`)
+- `kube.rs` client behavior (currently `kube-core 4.2.0` in this repo)
 - `kube-fake-client` HTTP behavior (`src/mock_service.rs`)
 
-Snapshot date: 2026-03-07.
+Snapshot date: 2026-10-08.
 
 ## Compatibility Matrix
 
-| Behavior | Swagger / kube-apiserver | kube.rs (3.0.1) | kube-fake-client (current) | Gap |
+| Behavior | Swagger / kube-apiserver | kube.rs (4.2.0) | kube-fake-client (current) | Gap |
 |---|---|---|---|---|
 | SSA `fieldManager` required | Required for apply patch | `PatchParams::apply("mgr")` sets it; request can include `fieldManager` | Enforced for apply patch, missing/empty => 422 | None for this rule |
 | `force` only for apply patch | Must be unset for non-apply patch | Client-side validation rejects `force` with non-apply patch | Parsed from query; no server-side guard for non-apply | If callers bypass kube.rs validation, fake is looser than apiserver |
@@ -55,8 +55,8 @@ Snapshot date: 2026-03-07.
 - Fake client HTTP behavior: `src/mock_service.rs`
 - Fake client SSA ownership logic: `src/managed_fields.rs`
 - Fake client tests: `src/mock_service_test.rs`, `src/managed_fields_test.rs`
-- kube.rs parameter behavior: `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kube-core-3.0.1/src/params.rs`
-- kube.rs request-side validation hooks: `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kube-core-3.0.1/src/request.rs`
+- kube.rs parameter behavior: `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kube-core-4.2.0/src/params.rs`
+- kube.rs request-side validation hooks: `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/kube-core-4.2.0/src/request.rs`
 
 ## Out Of Scope (Intentional)
 

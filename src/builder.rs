@@ -440,14 +440,13 @@ impl ClientBuilder {
             ))
         })?;
 
-        use serde::Deserialize;
-        for document in serde_yaml::Deserializer::from_str(&content) {
-            let value = Value::deserialize(document).map_err(|e| {
+        // kubectl parses manifests as YAML 1.1, where `0644` is octal.
+        let options = serde_saphyr::options! { legacy_octal_numbers: true };
+        let documents: Vec<Value> = serde_saphyr::from_multiple_with_options(&content, options)
+            .map_err(|e| {
                 Error::Internal(format!("Failed to parse YAML in {:?}: {}", fixture_path, e))
             })?;
-
-            self.initial_objects.push(value);
-        }
+        self.initial_objects.extend(documents);
 
         Ok(self)
     }

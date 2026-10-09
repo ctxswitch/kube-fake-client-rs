@@ -3,9 +3,9 @@
 //! This module provides metadata about Kubernetes resources that is generated
 //! from the official Kubernetes discovery API.
 //!
-//! The data is sourced from `kubernetes/api/discovery/` JSON files.
-//! To update the generated lookup functions, run:
-//! `cargo run --bin discovery-gen`
+//! The data is sourced from the `kubernetes/api/discovery/<release>/` JSON files
+//! of every supported Kubernetes release. To update the generated lookup
+//! functions, run: `cargo run -p xtask --bin discovery-gen`
 //!
 //! # Architecture
 //!

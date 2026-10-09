@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create client with schema validation
     let client = ClientBuilder::new()
-        .with_schema_validation_file("kubernetes/api/openapi/swagger.json")?
+        .with_schema_validation_file("kubernetes/api/openapi/v1.36/swagger.json")?
         .with_validation_for("/v1/Pod")?
         .with_validation_for("/v1/Service")?
         .build()
