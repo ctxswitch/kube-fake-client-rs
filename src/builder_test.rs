@@ -541,6 +541,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_interceptor_get_not_called_for_unimplemented_subresource() {
+        use crate::interceptor;
+        use std::sync::{Arc, Mutex};
+
+        let get_count = Arc::new(Mutex::new(0usize));
+        let get_count_clone = Arc::clone(&get_count);
+
+        let client = ClientBuilder::new()
+            .with_interceptor_funcs(interceptor::Funcs::new().get(move |_ctx| {
+                *get_count_clone.lock().unwrap() += 1;
+                Ok(None)
+            }))
+            .build()
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("p".to_string());
+        pods.create(&kube::api::PostParams::default(), &pod)
+            .await
+            .unwrap();
+
+        let result = pods.logs("p", &kube::api::LogParams::default()).await;
+        if let Err(kube::Error::Api(err)) = result {
+            assert_eq!(err.code, 404);
+        } else {
+            panic!("expected kube::Error::Api with code 404");
+        }
+        assert_eq!(*get_count.lock().unwrap(), 0);
+
+        pods.get("p").await.unwrap();
+        assert_eq!(*get_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn test_interceptor_delete_prevention() {
         use crate::interceptor;
 

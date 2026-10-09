@@ -9,7 +9,7 @@ mod tests {
     use crate::ClientBuilder;
     use k8s_openapi::api::core::v1::{Node, Pod};
     use k8s_openapi::api::rbac::v1::ClusterRole;
-    use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
+    use kube::api::{DeleteParams, EvictParams, LogParams, Patch, PatchParams, PostParams};
     use serde_json::json;
 
     // ============================================================================
@@ -2200,5 +2200,206 @@ mod tests {
                 || patched.metadata.managed_fields.as_ref().unwrap().is_empty(),
             "merge patch should not create managedFields"
         );
+    }
+
+    // ============================================================================
+    // Unimplemented Subresource Tests
+    // ============================================================================
+
+    /// Builds a client holding pod `p` in `default` with label `app=web`.
+    async fn client_with_pod_p() -> (kube::Client, kube::Api<Pod>, Pod) {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("p".to_string());
+        pod.metadata.labels = Some(BTreeMap::from([("app".to_string(), "web".to_string())]));
+        let created = pods.create(&PostParams::default(), &pod).await.unwrap();
+        (client, pods, created)
+    }
+
+    /// Asserts `result` is a 404 `NotFound` Status whose message contains `needle`.
+    fn assert_subresource_not_found<T>(result: Result<T, kube::Error>, needle: &str) {
+        if let Err(kube::Error::Api(err)) = result {
+            assert_eq!(err.code, 404, "unexpected status: {err:?}");
+            assert_eq!(err.reason, "NotFound");
+            assert!(
+                err.message.contains(needle),
+                "message {:?} should contain {needle:?}",
+                err.message
+            );
+        } else {
+            panic!("expected kube::Error::Api with code 404");
+        }
+    }
+
+    fn labels_of(pod: &Pod) -> BTreeMap<String, String> {
+        pod.metadata.labels.clone().unwrap_or_default()
+    }
+
+    /// Pod logs are not implemented and return 404.
+    #[tokio::test]
+    async fn test_logs_subresource_returns_404() {
+        let (_client, pods, _created) = client_with_pod_p().await;
+        let result = pods.logs("p", &LogParams::default()).await;
+        assert_subresource_not_found(result, "pods/log \"p\"");
+    }
+
+    /// An unknown subresource on GET returns 404.
+    #[tokio::test]
+    async fn test_unknown_subresource_get_returns_404() {
+        let (_client, pods, _created) = client_with_pod_p().await;
+        let result = pods.get_subresource("nope", "p").await;
+        assert_subresource_not_found(result, "pods/nope \"p\"");
+    }
+
+    /// Eviction returns 404 and leaves the parent pod untouched.
+    #[tokio::test]
+    async fn test_evict_subresource_returns_404_and_leaves_parent_untouched() {
+        let (_client, pods, created) = client_with_pod_p().await;
+        let result = pods.evict("p", &EvictParams::default()).await;
+        assert_subresource_not_found(result, "pods/eviction \"p\"");
+        assert_eq!(
+            pods.get("p").await.unwrap().metadata.resource_version,
+            created.metadata.resource_version
+        );
+    }
+
+    /// PUT on an unimplemented subresource returns 404 and does not modify the parent.
+    #[tokio::test]
+    async fn test_replace_unimplemented_subresource_returns_404() {
+        let (_client, pods, created) = client_with_pod_p().await;
+        let mut modified = created.clone();
+        modified.metadata.labels =
+            Some(BTreeMap::from([("app".to_string(), "changed".to_string())]));
+        let result = pods
+            .replace_subresource(
+                "ephemeralcontainers",
+                "p",
+                &PostParams::default(),
+                &modified,
+            )
+            .await;
+        assert_subresource_not_found(result, "pods/ephemeralcontainers \"p\"");
+        assert_eq!(
+            labels_of(&pods.get("p").await.unwrap()),
+            BTreeMap::from([("app".to_string(), "web".to_string())])
+        );
+    }
+
+    /// Apply patch on an unimplemented subresource returns 404 even without a fieldManager.
+    #[tokio::test]
+    async fn test_apply_patch_on_unimplemented_subresource_returns_404_not_422() {
+        let (client, _pods, _created) = client_with_pod_p().await;
+        let body = serde_json::to_vec(&json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "p" }
+        }))
+        .unwrap();
+        let req = http::Request::patch("/api/v1/namespaces/default/pods/p/resize")
+            .header("Content-Type", "application/apply-patch+yaml")
+            .body(body)
+            .unwrap();
+        let result = client.request_text(req).await;
+        assert_subresource_not_found(result, "pods/resize \"p\"");
+    }
+
+    /// Merge patch on an unimplemented subresource returns 404 and does not modify the parent.
+    #[tokio::test]
+    async fn test_merge_patch_on_unimplemented_subresource_returns_404() {
+        let (_client, pods, _created) = client_with_pod_p().await;
+        let result = pods
+            .patch_subresource(
+                "resize",
+                "p",
+                &PatchParams::default(),
+                &Patch::Merge(&json!({"metadata": {"labels": {"app": "changed"}}})),
+            )
+            .await;
+        assert_subresource_not_found(result, "pods/resize \"p\"");
+        assert_eq!(
+            labels_of(&pods.get("p").await.unwrap()),
+            BTreeMap::from([("app".to_string(), "web".to_string())])
+        );
+    }
+
+    /// DELETE on the status subresource returns 404 and does not delete the parent.
+    #[tokio::test]
+    async fn test_delete_on_status_subresource_returns_404() {
+        let (client, pods, _created) = client_with_pod_p().await;
+        let req = http::Request::delete("/api/v1/namespaces/default/pods/p/status")
+            .body(Vec::new())
+            .unwrap();
+        let result = client.request_text(req).await;
+        assert_subresource_not_found(result, "pods/status \"p\"");
+        assert!(pods.get("p").await.is_ok());
+    }
+
+    /// POST on the status subresource returns 404.
+    #[tokio::test]
+    async fn test_post_on_status_subresource_returns_404() {
+        let (client, _pods, created) = client_with_pod_p().await;
+        let req = http::Request::post("/api/v1/namespaces/default/pods/p/status")
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&created).unwrap())
+            .unwrap();
+        let result = client.request_text(req).await;
+        assert_subresource_not_found(result, "pods/status \"p\"");
+    }
+
+    /// Unimplemented subresources on cluster-scoped resources return 404.
+    #[tokio::test]
+    async fn test_cluster_scoped_unimplemented_subresource_returns_404() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let nodes: kube::Api<Node> = kube::Api::all(client);
+        let mut node = Node::default();
+        node.metadata.name = Some("n1".to_string());
+        nodes.create(&PostParams::default(), &node).await.unwrap();
+        let result = nodes.get_subresource("proxy", "n1").await;
+        assert_subresource_not_found(result, "nodes/proxy \"n1\"");
+    }
+
+    /// Path segments after the subresource are part of the 404 message.
+    #[tokio::test]
+    async fn test_nested_subresource_path_returns_404() {
+        let (client, _pods, _created) = client_with_pod_p().await;
+        let req = http::Request::get("/api/v1/namespaces/default/pods/p/status/extra")
+            .body(Vec::new())
+            .unwrap();
+        let result = client.request_text(req).await;
+        assert_subresource_not_found(result, "pods/status/extra \"p\"");
+    }
+
+    /// A pod named `status` is routed as a normal object, not as a status subresource.
+    #[tokio::test]
+    async fn test_object_named_status_is_a_normal_object() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("status".to_string());
+        let created = pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        let patched = pods
+            .patch(
+                "status",
+                &PatchParams::default(),
+                &Patch::Merge(&json!({"metadata": {"labels": {"patched": "yes"}}})),
+            )
+            .await
+            .unwrap();
+
+        let fetched = pods.get("status").await.unwrap();
+        assert_eq!(
+            fetched
+                .metadata
+                .labels
+                .as_ref()
+                .unwrap()
+                .get("patched")
+                .map(String::as_str),
+            Some("yes")
+        );
+        assert_eq!(created.metadata.generation, Some(1));
+        assert_eq!(patched.metadata.generation, Some(2));
     }
 }
