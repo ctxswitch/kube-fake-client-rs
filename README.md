@@ -44,9 +44,7 @@ tokio = { version = "1.0", features = ["full"] }
 
 ### Kubernetes Versions
 
-`kube-fake-client` has no Kubernetes version features. It uses the version that your `k8s-openapi` dependency selects, so any version that `k8s-openapi` 0.28 supports works: `v1_32` through `v1_36`, or `earliest` / `latest`. The built-in discovery data and immutable-field data include the resources of all of these versions.
-
-Enable exactly one version feature on `k8s-openapi`. If your crate is a library, enable it on the `k8s-openapi` dev-dependency only; see the [k8s-openapi documentation](https://docs.rs/k8s-openapi) for details.
+`kube-fake-client` uses the Kubernetes version that your `k8s-openapi` feature selects: `v1_32` through `v1_36`, `earliest`, or `latest`.
 
 ### With OpenAPI Validation (Optional)
 

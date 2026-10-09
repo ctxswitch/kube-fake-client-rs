@@ -8,8 +8,8 @@
 //! the union over those releases, and its other metadata comes from the newest
 //! release that serves it.
 //!
-//! Each release reads `kubernetes/api/discovery/<minor>/` and fetches the files
-//! from the Kubernetes GitHub repo when they are missing.
+//! The data of each release is in `kubernetes/api/discovery/<minor>/`. The
+//! generator fetches missing files from the Kubernetes GitHub repo.
 //!
 //! # Usage
 //!
@@ -18,7 +18,7 @@
 //! cargo run -p xtask --bin discovery-gen
 //! ```
 //!
-//! Fetch discovery data for every release again, then generate:
+//! Fetch discovery data for every release, then generate:
 //! ```bash
 //! cargo run -p xtask --bin discovery-gen -- --update
 //! ```

@@ -10,8 +10,8 @@
 //! if it is immutable in any of those releases. The generator prints a warning when a
 //! field is immutable in one release and mutable in another.
 //!
-//! Each release reads `kubernetes/api/openapi/<minor>/swagger.json` and fetches the
-//! file from the Kubernetes GitHub repo when it is missing.
+//! The schema of each release is in `kubernetes/api/openapi/<minor>/swagger.json`.
+//! The generator fetches a missing file from the Kubernetes GitHub repo.
 //!
 //! # Usage
 //!
@@ -20,7 +20,7 @@
 //! cargo run -p xtask --bin immutable-gen
 //! ```
 //!
-//! Fetch swagger.json for every release again, then generate:
+//! Fetch swagger.json for every release, then generate:
 //! ```bash
 //! cargo run -p xtask --bin immutable-gen -- --update
 //! ```
