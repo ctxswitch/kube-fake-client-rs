@@ -7,7 +7,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::ClientBuilder;
-    use k8s_openapi::api::core::v1::{Node, Pod};
+    use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
     use k8s_openapi::api::rbac::v1::ClusterRole;
     use kube::api::{DeleteParams, EvictParams, LogParams, Patch, PatchParams, PostParams};
     use serde_json::json;
@@ -746,6 +746,158 @@ mod tests {
             .items
             .iter()
             .any(|p| p.metadata.name == Some("pod-2".to_string())));
+    }
+
+    // ============================================================================
+    // Namespace Resource Tests
+    // ============================================================================
+
+    /// Namespace supports CRUD and the status subresource through `Api::all`.
+    #[tokio::test]
+    async fn test_namespace_resource_crud_and_status() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let api: kube::Api<Namespace> = kube::Api::all(client);
+        let pp = PostParams::default();
+
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("team-a".to_string());
+        let created = api.create(&pp, &ns).await.unwrap();
+        assert_eq!(created.metadata.namespace, None);
+        ns.metadata.name = Some("team-b".to_string());
+        api.create(&pp, &ns).await.unwrap();
+
+        let fetched = api.get("team-a").await.unwrap();
+        assert_eq!(fetched.metadata.name.as_deref(), Some("team-a"));
+        assert_eq!(api.list(&Default::default()).await.unwrap().items.len(), 2);
+
+        let mut updated = fetched;
+        updated.metadata.labels = Some(BTreeMap::from([("env".to_string(), "dev".to_string())]));
+        api.replace("team-a", &pp, &updated).await.unwrap();
+        let fetched = api.get("team-a").await.unwrap();
+        assert_eq!(
+            fetched.metadata.labels.as_ref().and_then(|l| l.get("env")),
+            Some(&"dev".to_string())
+        );
+
+        api.patch(
+            "team-a",
+            &PatchParams::default(),
+            &Patch::Merge(json!({"metadata": {"labels": {"tier": "gold"}}})),
+        )
+        .await
+        .unwrap();
+        let fetched = api.get("team-a").await.unwrap();
+        assert_eq!(
+            fetched.metadata.labels.as_ref().and_then(|l| l.get("tier")),
+            Some(&"gold".to_string())
+        );
+
+        let mut with_status = fetched;
+        with_status.status = Some(Default::default());
+        with_status.status.as_mut().unwrap().phase = Some("Active".to_string());
+        api.replace_status("team-a", &pp, &with_status)
+            .await
+            .unwrap();
+        let status = api.get_status("team-a").await.unwrap();
+        assert_eq!(
+            status.status.and_then(|s| s.phase).as_deref(),
+            Some("Active")
+        );
+
+        api.patch_status(
+            "team-a",
+            &PatchParams::default(),
+            &Patch::Merge(json!({"status": {"conditions": [{"type": "Ready", "status": "True"}]}})),
+        )
+        .await
+        .unwrap();
+        let status = api.get_status("team-a").await.unwrap();
+        let status = status.status.unwrap();
+        assert_eq!(status.phase.as_deref(), Some("Active"));
+        let conditions = status.conditions.unwrap();
+        assert_eq!(conditions.len(), 1);
+        assert_eq!(conditions[0].type_, "Ready");
+
+        api.delete("team-b", &DeleteParams::default())
+            .await
+            .unwrap();
+        match api.get("team-b").await {
+            Err(kube::Error::Api(err)) => {
+                assert_eq!(err.code, 404);
+                assert_eq!(err.reason, "NotFound");
+            }
+            other => panic!("expected 404 NotFound, got {other:?}"),
+        }
+    }
+
+    /// A Namespace named `status` does not change how paths inside it are parsed.
+    #[tokio::test]
+    async fn test_namespace_resource_named_status_does_not_shadow_namespaced_paths() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("status".to_string());
+        namespaces
+            .create(&PostParams::default(), &ns)
+            .await
+            .unwrap();
+        namespaces.get("status").await.unwrap();
+        namespaces.get_status("status").await.unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "status");
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("p".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+        pods.get("p").await.unwrap();
+        assert_eq!(pods.list(&Default::default()).await.unwrap().items.len(), 1);
+    }
+
+    /// Namespace `finalize` is not implemented and returns 404.
+    #[tokio::test]
+    async fn test_namespace_resource_finalize_returns_404() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let api: kube::Api<Namespace> = kube::Api::all(client);
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("team-a".to_string());
+        api.create(&PostParams::default(), &ns).await.unwrap();
+
+        let result = api.get_subresource("finalize", "team-a").await;
+        assert_subresource_not_found(result, "namespaces/finalize \"team-a\"");
+        let result = api
+            .replace_subresource("finalize", "team-a", &PostParams::default(), &ns)
+            .await;
+        assert_subresource_not_found(result, "namespaces/finalize \"team-a\"");
+    }
+
+    /// Paths that do not parse as API resource paths return a 404 `Status`.
+    #[tokio::test]
+    async fn test_unmatched_path_returns_404_status() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let cases = [
+            ("GET", "/api"),
+            ("GET", "/api/v1"),
+            ("GET", "/apis/apps/v1/namespaces"),
+            ("PUT", "/apis"),
+            ("DELETE", "/version"),
+        ];
+        for (method, uri) in cases {
+            let req = http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Vec::new())
+                .unwrap();
+            match client.request_text(req).await {
+                Err(kube::Error::Api(s)) => {
+                    assert_eq!(s.code, 404, "{method} {uri}");
+                    assert_eq!(s.reason, "NotFound", "{method} {uri}");
+                    assert_eq!(
+                        s.message, "the server could not find the requested resource",
+                        "{method} {uri}"
+                    );
+                }
+                other => panic!("{method} {uri}: expected kube::Error::Api, got {other:?}"),
+            }
+        }
     }
 
     // ============================================================================
