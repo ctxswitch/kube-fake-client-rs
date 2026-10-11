@@ -27,6 +27,9 @@ const CONTENT_TYPE_MERGE_PATCH: &str = "application/merge-patch+json";
 const CONTENT_TYPE_STRATEGIC_MERGE: &str = "application/strategic-merge-patch+json";
 const CONTENT_TYPE_APPLY_PATCH: &str = "application/apply-patch+yaml";
 
+/// Segments kube-apiserver reads as a Namespace subresource after `/api/v1/namespaces/{name}`.
+const NAMESPACE_SUBRESOURCES: [&str; 2] = ["status", "finalize"];
+
 /// Macro to handle crate::Error conversion to HTTP response
 macro_rules! handle_error {
     ($result:expr) => {
@@ -80,8 +83,14 @@ impl MockService {
     /// - `/api/v1/namespaces/default/pods/my-pod` (namespaced with name)
     /// - `/api/v1/namespaces/default/pods/my-pod/status` (namespaced with subresource `status`)
     /// - `/apis/apps/v1/namespaces/default/deployments` (namespaced with group)
+    /// - `/api/v1/namespaces` (Namespace collection, cluster-scoped)
+    /// - `/api/v1/namespaces/my-ns` (Namespace with name)
+    /// - `/api/v1/namespaces/my-ns/status` (Namespace with subresource `status`)
     /// - `/api/v1/nodes` (cluster-scoped)
     /// - `/api/v1/nodes/my-node/proxy` (cluster-scoped with subresource `proxy`)
+    ///
+    /// Under `/api/v1/namespaces/{name}`, only `status` and `finalize` are read as Namespace
+    /// subresources; any other segment names a namespaced resource in that namespace.
     ///
     /// Segments after the subresource are joined with `/`, so
     /// `/api/v1/namespaces/default/pods/my-pod/status/extra` yields subresource `status/extra`.
@@ -108,8 +117,13 @@ impl MockService {
 
         let version = parts[version_idx].to_string();
 
+        let is_namespace_path = group.is_none()
+            && parts.get(version_idx + 1) == Some(&"namespaces")
+            && (parts.len() < version_idx + 4
+                || NAMESPACE_SUBRESOURCES.contains(&parts[version_idx + 3]));
+
         // Check if this is a namespaced resource path
-        if parts.get(version_idx + 1) == Some(&"namespaces") {
+        if parts.get(version_idx + 1) == Some(&"namespaces") && !is_namespace_path {
             // Namespaced resource: /api/v1/namespaces/{namespace}/{resource}[/{name}]
             if parts.len() < version_idx + 4 {
                 return None;
@@ -540,25 +554,31 @@ impl MockService {
             collected.to_bytes()
         };
 
-        if let Some(parsed) = Self::parse_path(&path) {
-            if let Some(sub) = parsed.subresource.as_deref() {
-                if !Self::is_implemented_subresource(method.as_str(), sub) {
-                    return Self::subresource_not_found_response(&parsed, sub);
-                }
+        let Some(parsed) = Self::parse_path(&path) else {
+            return Self::path_not_found_response();
+        };
+        if let Some(sub) = parsed.subresource.as_deref() {
+            if !Self::is_implemented_subresource(method.as_str(), sub) {
+                return Self::subresource_not_found_response(&parsed, sub);
             }
         }
 
         // Route based on HTTP method
         match method.as_str() {
-            "GET" => self.handle_get(&path, query.as_deref()).await,
-            "POST" => self.handle_post(&path, body_bytes).await,
-            "PUT" => self.handle_put(&path, body_bytes).await,
+            "GET" => self.handle_get(parsed, query.as_deref()).await,
+            "POST" => self.handle_post(parsed, body_bytes).await,
+            "PUT" => self.handle_put(parsed, body_bytes).await,
             "PATCH" => {
-                self.handle_patch(&path, body_bytes, content_type.as_deref(), query.as_deref())
-                    .await
+                self.handle_patch(
+                    parsed,
+                    body_bytes,
+                    content_type.as_deref(),
+                    query.as_deref(),
+                )
+                .await
             }
             "DELETE" => {
-                self.handle_delete(&path, query.as_deref(), body_bytes)
+                self.handle_delete(parsed, query.as_deref(), body_bytes)
                     .await
             }
             _ => Self::error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
@@ -567,10 +587,9 @@ impl MockService {
 
     async fn handle_get(
         &self,
-        path: &str,
+        parsed: ParsedPath,
         query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
-        let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let is_status = parsed.subresource.as_deref() == Some("status");
         let namespace = Self::extract_namespace(&parsed);
         let kind = handle_error!(self.resource_to_kind(
@@ -637,10 +656,9 @@ impl MockService {
 
     async fn handle_post(
         &self,
-        path: &str,
+        parsed: ParsedPath,
         body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
-        let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let namespace = Self::extract_namespace(&parsed);
 
         let mut obj: Value = serde_json::from_slice(&body)?;
@@ -697,10 +715,9 @@ impl MockService {
 
     async fn handle_put(
         &self,
-        path: &str,
+        parsed: ParsedPath,
         body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
-        let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let is_status = parsed.subresource.as_deref() == Some("status");
         let namespace = Self::extract_namespace(&parsed);
         let name = parsed.name.as_ref().ok_or("Name required for PUT")?;
@@ -790,12 +807,11 @@ impl MockService {
 
     async fn handle_patch(
         &self,
-        path: &str,
+        parsed: ParsedPath,
         body: Bytes,
         content_type: Option<&str>,
         query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
-        let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let is_status = parsed.subresource.as_deref() == Some("status");
         let namespace = Self::extract_namespace(&parsed);
         let name = parsed.name.ok_or("Name required for PATCH")?;
@@ -931,11 +947,10 @@ impl MockService {
 
     async fn handle_delete(
         &self,
-        path: &str,
+        parsed: ParsedPath,
         query: Option<&str>,
         body: Bytes,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
-        let parsed = Self::parse_path(path).ok_or("Invalid path")?;
         let namespace = Self::extract_namespace(&parsed);
 
         let gvr = GVR::new(
@@ -1160,6 +1175,25 @@ impl MockService {
             "message": format!(
                 "the server could not find the requested resource ({resource}/{subresource} \"{name}\")"
             ),
+            "reason": "NotFound",
+            "code": 404
+        });
+
+        Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header("Content-Type", CONTENT_TYPE_JSON)
+            .body(Full::new(Bytes::from(body.to_string())))
+            .expect("Failed to build response"))
+    }
+
+    /// 404 `Status` for a path that is not an API resource path.
+    fn path_not_found_response(
+    ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+        let body = serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "the server could not find the requested resource",
             "reason": "NotFound",
             "code": 404
         });
