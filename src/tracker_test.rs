@@ -1025,4 +1025,140 @@ mod tests {
             .unwrap();
         assert!(tracker.get(&gvr, "default", "test-pod").is_ok());
     }
+
+    // ============================================================================
+    // Namespace Deletion Tests
+    // ============================================================================
+
+    fn create_namespace(tracker: &ObjectTracker, name: &str, finalizers: &[&str]) {
+        let ns = json!({
+            "apiVersion": "v1",
+            "kind": "Namespace",
+            "metadata": { "name": name, "finalizers": finalizers }
+        });
+        tracker
+            .create(
+                &GVR::new("", "v1", "namespaces"),
+                &GVK::new("", "v1", "Namespace"),
+                ns,
+                "",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_delete_empty_namespace_removes_it() {
+        let tracker = ObjectTracker::default();
+        let ns_gvr = GVR::new("", "v1", "namespaces");
+        create_namespace(&tracker, "team-a", &[]);
+
+        tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+
+        assert!(tracker.get(&ns_gvr, "", "team-a").is_err());
+    }
+
+    #[test]
+    fn test_delete_namespace_deletes_its_contents() {
+        let tracker = ObjectTracker::default();
+        let ns_gvr = GVR::new("", "v1", "namespaces");
+        let pod_gvr = GVR::new("", "v1", "pods");
+        let pod_gvk = GVK::new("", "v1", "Pod");
+        let widget_gvr = GVR::new("example.com", "v1", "widgets");
+        let widget_gvk = GVK::new("example.com", "v1", "Widget");
+        create_namespace(&tracker, "team-a", &[]);
+
+        tracker
+            .create(
+                &pod_gvr,
+                &pod_gvk,
+                create_test_object("pod-a", "team-a"),
+                "team-a",
+            )
+            .unwrap();
+        tracker
+            .create(
+                &pod_gvr,
+                &pod_gvk,
+                create_test_object("pod-b", "team-b"),
+                "team-b",
+            )
+            .unwrap();
+        let widget = json!({
+            "apiVersion": "example.com/v1",
+            "kind": "Widget",
+            "metadata": { "name": "widget-a", "namespace": "team-a" }
+        });
+        tracker
+            .create(&widget_gvr, &widget_gvk, widget, "team-a")
+            .unwrap();
+
+        tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+
+        assert!(tracker.get(&ns_gvr, "", "team-a").is_err());
+        assert!(tracker.get(&pod_gvr, "team-a", "pod-a").is_err());
+        assert!(tracker.get(&widget_gvr, "team-a", "widget-a").is_err());
+        assert!(tracker.get(&pod_gvr, "team-b", "pod-b").is_ok());
+    }
+
+    #[test]
+    fn test_delete_namespace_waits_for_content_finalizers() {
+        let tracker = ObjectTracker::default();
+        let ns_gvr = GVR::new("", "v1", "namespaces");
+        let pod_gvr = GVR::new("", "v1", "pods");
+        let pod_gvk = GVK::new("", "v1", "Pod");
+        create_namespace(&tracker, "team-a", &[]);
+        let mut pod = create_test_object("held", "team-a");
+        pod["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
+        tracker.create(&pod_gvr, &pod_gvk, pod, "team-a").unwrap();
+
+        let terminating = tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        assert!(terminating["metadata"]["deletionTimestamp"].is_string());
+        assert_eq!(terminating["status"]["phase"], "Terminating");
+        assert_eq!(tracker.get(&ns_gvr, "", "team-a").unwrap(), terminating);
+        let mut held = tracker.get(&pod_gvr, "team-a", "held").unwrap();
+        assert!(held["metadata"]["deletionTimestamp"].is_string());
+
+        // A repeat delete while content remains changes nothing
+        let again = tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        assert_eq!(again, terminating);
+
+        // Clearing the last finalizer removes the object, then the namespace
+        held["metadata"]["finalizers"] = json!([]);
+        tracker
+            .update(&pod_gvr, &pod_gvk, held, "team-a", false)
+            .unwrap();
+        assert!(tracker.get(&pod_gvr, "team-a", "held").is_err());
+        assert!(tracker.get(&ns_gvr, "", "team-a").is_err());
+    }
+
+    #[test]
+    fn test_namespace_finalizers_hold_namespace_until_content_is_gone() {
+        let tracker = ObjectTracker::default();
+        let ns_gvr = GVR::new("", "v1", "namespaces");
+        let ns_gvk = GVK::new("", "v1", "Namespace");
+        let pod_gvr = GVR::new("", "v1", "pods");
+        let pod_gvk = GVK::new("", "v1", "Pod");
+        create_namespace(&tracker, "team-a", &["example.com/ns"]);
+        let mut pod = create_test_object("held", "team-a");
+        pod["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
+        tracker.create(&pod_gvr, &pod_gvk, pod, "team-a").unwrap();
+
+        let mut namespace = tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+
+        // Clearing the namespace's finalizer while content remains keeps it
+        namespace["metadata"]["finalizers"] = json!([]);
+        tracker
+            .update(&ns_gvr, &ns_gvk, namespace, "", false)
+            .unwrap();
+        let namespace = tracker.get(&ns_gvr, "", "team-a").unwrap();
+        assert!(namespace["metadata"]["deletionTimestamp"].is_string());
+
+        // Removing the last object then removes the namespace
+        let mut held = tracker.get(&pod_gvr, "team-a", "held").unwrap();
+        held["metadata"]["finalizers"] = json!([]);
+        tracker
+            .update(&pod_gvr, &pod_gvk, held, "team-a", false)
+            .unwrap();
+        assert!(tracker.get(&ns_gvr, "", "team-a").is_err());
+    }
 }

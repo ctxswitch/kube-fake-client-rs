@@ -75,6 +75,10 @@ type ObjectsByName = HashMap<String, StoredObject>;
 type ObjectsByNamespace = HashMap<String, ObjectsByName>;
 type ObjectStorage = HashMap<GVR, ObjectsByNamespace>;
 
+fn namespaces_gvr() -> GVR {
+    GVR::new("", "v1", "namespaces")
+}
+
 pub struct ObjectTracker {
     objects: Arc<RwLock<ObjectStorage>>,
     with_status_subresource: Arc<RwLock<std::collections::HashSet<GVK>>>,
@@ -223,6 +227,28 @@ impl ObjectTracker {
         let mut meta = self.extract_metadata(&object)?;
         let name = Self::extract_name(&meta)?;
 
+        // kube-apiserver's NamespaceLifecycle admission. `add` skips it, as
+        // seeding bypasses admission.
+        if !namespace.is_empty()
+            && self
+                .get(&namespaces_gvr(), "", namespace)
+                .is_ok_and(|ns| ns["status"]["phase"] == "Terminating")
+        {
+            return Err(Error::Forbidden {
+                kind: gvr.resource.clone(),
+                group: gvr.group.clone(),
+                name,
+                message: format!(
+                    "unable to create new content in namespace {namespace} because it is being terminated"
+                ),
+                causes: vec![kube::core::response::StatusCause {
+                    reason: "NamespaceTerminating".to_string(),
+                    message: format!("namespace {namespace} is being terminated"),
+                    field: "metadata.namespace".to_string(),
+                }],
+            });
+        }
+
         // Validate resource version not set for create
         if meta
             .resource_version
@@ -365,11 +391,15 @@ impl ObjectTracker {
 
         // The last finalizer was removed. The stored copy still carries the old
         // finalizers, so remove it directly rather than through `delete`. Like
-        // kube-apiserver, return the request object.
+        // kube-apiserver, return the request object. A terminating Namespace
+        // that still holds objects stays: kube-apiserver keeps it on
+        // `spec.finalizers` until the namespace controller has emptied it.
         if should_be_deleted(&new_meta) {
             let mut objects = self.objects.write().expect("lock poisoned");
-            self.remove_locked(&mut objects, gvr, namespace, &name, true)?;
-            return Ok(object);
+            if !(*gvr == namespaces_gvr() && Self::namespace_has_content_locked(&objects, &name)) {
+                self.remove_locked(&mut objects, gvr, namespace, &name, true)?;
+                return Ok(object);
+            }
         }
 
         let stored = StoredObject {
@@ -406,11 +436,29 @@ impl ObjectTracker {
     ///
     /// When `cascade` is `false`, only the target object is removed — no
     /// dependent scanning or deletion is performed.
+    ///
+    /// A Namespace follows [`Self::delete_namespace_locked`] instead.
     pub fn delete(&self, gvr: &GVR, namespace: &str, name: &str, cascade: bool) -> Result<Value> {
         trace!("Deleting object: {:?} {}/{}", gvr, namespace, name);
 
         let mut objects = self.objects.write().expect("lock poisoned");
 
+        if *gvr == namespaces_gvr() {
+            return self.delete_namespace_locked(&mut objects, name);
+        }
+        self.delete_locked(&mut objects, gvr, namespace, name, cascade)
+    }
+
+    /// Deletes one object under the caller's write lock: marks it when it has
+    /// finalizers, and otherwise removes it.
+    fn delete_locked(
+        &self,
+        objects: &mut ObjectStorage,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+        cascade: bool,
+    ) -> Result<Value> {
         let stored = objects
             .get_mut(gvr)
             .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
@@ -428,7 +476,93 @@ impl ObjectTracker {
             return Ok(stored.data.clone());
         }
 
-        self.remove_locked(&mut objects, gvr, namespace, name, cascade)
+        self.remove_locked(objects, gvr, namespace, name, cascade)
+    }
+
+    /// Deletes Namespace `name` the way kube-apiserver and the namespace
+    /// controller do together. The first delete sets `deletionTimestamp` and
+    /// `status.phase: Terminating`, then deletes every object in the namespace
+    /// with background propagation. The Namespace leaves the store once it
+    /// holds no objects and has no finalizers (see
+    /// [`Self::remove_namespace_if_finalized_locked`]). The fake does not show
+    /// the `kubernetes` entry in `spec.finalizers`; remaining content plays its
+    /// part.
+    fn delete_namespace_locked(&self, objects: &mut ObjectStorage, name: &str) -> Result<Value> {
+        let gvr = namespaces_gvr();
+        let stored = objects
+            .get_mut(&gvr)
+            .and_then(|gvr_objects| gvr_objects.get_mut(""))
+            .and_then(|ns_objects| ns_objects.get_mut(name))
+            .ok_or_else(|| gvr.not_found_error("", name))?;
+
+        if stored.metadata.deletion_timestamp.is_none() {
+            stored.metadata.deletion_timestamp = Some(Time(jiff::Timestamp::now()));
+            stored.metadata.resource_version = Some(self.next_resource_version());
+            stored.data["metadata"] = serde_json::to_value(&stored.metadata)?;
+            stored.data["status"]["phase"] = Value::from("Terminating");
+            let marked = stored.data.clone();
+            debug!("Marked namespace for deletion: {}", name);
+
+            let contents: Vec<(GVR, String)> = objects
+                .iter()
+                .filter_map(|(gvr, namespaces)| namespaces.get(name).map(|objs| (gvr, objs)))
+                .flat_map(|(gvr, objs)| objs.keys().map(move |obj| (gvr.clone(), obj.clone())))
+                .collect();
+            for (obj_gvr, obj_name) in contents {
+                // An earlier cascade may already have removed it.
+                let present = objects
+                    .get(&obj_gvr)
+                    .and_then(|namespaces| namespaces.get(name))
+                    .is_some_and(|objs| objs.contains_key(&obj_name));
+                if present {
+                    self.delete_locked(objects, &obj_gvr, name, &obj_name, true)?;
+                }
+            }
+
+            self.remove_namespace_if_finalized_locked(objects, name)?;
+            return Ok(marked);
+        }
+
+        // While content remains kube-apiserver still sees `spec.finalizers` and
+        // returns the Namespace unchanged; after that it falls through to the
+        // generic delete.
+        if Self::namespace_has_content_locked(objects, name) {
+            return objects
+                .get(&gvr)
+                .and_then(|gvr_objects| gvr_objects.get(""))
+                .and_then(|ns_objects| ns_objects.get(name))
+                .map(|stored| stored.data.clone())
+                .ok_or_else(|| gvr.not_found_error("", name));
+        }
+        self.delete_locked(objects, &gvr, "", name, true)
+    }
+
+    fn namespace_has_content_locked(objects: &ObjectStorage, namespace: &str) -> bool {
+        objects.values().any(|namespaces| {
+            namespaces
+                .get(namespace)
+                .is_some_and(|objs| !objs.is_empty())
+        })
+    }
+
+    /// Removes Namespace `name` once it is terminating, has no finalizers and
+    /// holds no objects: the namespace controller's last step.
+    fn remove_namespace_if_finalized_locked(
+        &self,
+        objects: &mut ObjectStorage,
+        name: &str,
+    ) -> Result<()> {
+        let gvr = namespaces_gvr();
+        let finalized = objects
+            .get(&gvr)
+            .and_then(|gvr_objects| gvr_objects.get(""))
+            .and_then(|ns_objects| ns_objects.get(name))
+            .is_some_and(|stored| should_be_deleted(&stored.metadata));
+        if finalized && !Self::namespace_has_content_locked(objects, name) {
+            self.remove_locked(objects, &gvr, "", name, true)?;
+            debug!("Removed finalized namespace: {}", name);
+        }
+        Ok(())
     }
 
     /// Marks `stored` as terminating the way kube-apiserver's `markAsDeleting`
@@ -462,7 +596,8 @@ impl ObjectTracker {
     }
 
     /// Removes `name` from `objects` and, when `cascade` is `true`, its
-    /// dependents. The caller holds the write lock.
+    /// dependents. A terminating Namespace emptied by the removal is removed
+    /// too. The caller holds the write lock.
     fn remove_locked(
         &self,
         objects: &mut ObjectStorage,
@@ -481,9 +616,11 @@ impl ObjectTracker {
         let data = stored.data;
 
         if !cascade {
+            self.remove_namespace_if_finalized_locked(objects, namespace)?;
             return Ok(data);
         }
 
+        let mut touched_namespaces = BTreeSet::from([namespace.to_string()]);
         let mut visited = HashSet::new();
         let mut pending = Vec::new();
 
@@ -533,6 +670,7 @@ impl ObjectTracker {
                     .and_then(|n| n.remove(&dep_name))
                 {
                     debug!("Cascade-deleted dependent: {}/{}", dep_ns, dep_name);
+                    touched_namespaces.insert(dep_ns.clone());
                     if let Some(dep_uid) = dep_stored.metadata.uid {
                         if visited.insert(dep_uid.clone()) {
                             pending.push((dep_uid, dep_ns));
@@ -545,6 +683,10 @@ impl ObjectTracker {
                     }
                 }
             }
+        }
+
+        for ns in &touched_namespaces {
+            self.remove_namespace_if_finalized_locked(objects, ns)?;
         }
 
         Ok(data)

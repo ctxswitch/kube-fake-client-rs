@@ -1,4 +1,4 @@
-use kube::core::response::StatusSummary;
+use kube::core::response::{StatusCause, StatusDetails, StatusSummary};
 use kube::core::Status;
 use thiserror::Error;
 
@@ -23,6 +23,15 @@ pub enum Error {
 
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    #[error("Forbidden: {kind} {name}: {message}")]
+    Forbidden {
+        kind: String, // resource name (lowercase plural, e.g., "pods")
+        group: String,
+        name: String,
+        message: String,
+        causes: Vec<StatusCause>,
+    },
 
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
@@ -83,6 +92,35 @@ impl Error {
                 metadata: None,
                 details: None,
             },
+            // Format: 'deployments.apps "web" is forbidden: <message>'
+            Error::Forbidden {
+                kind,
+                group,
+                name,
+                message,
+                causes,
+            } => {
+                let resource = if group.is_empty() {
+                    kind.clone()
+                } else {
+                    format!("{kind}.{group}")
+                };
+                Status {
+                    status: Some(StatusSummary::Failure),
+                    message: format!("{resource} \"{name}\" is forbidden: {message}"),
+                    reason: "Forbidden".to_string(),
+                    code: 403,
+                    metadata: None,
+                    details: Some(StatusDetails {
+                        name: name.clone(),
+                        group: group.clone(),
+                        kind: kind.clone(),
+                        uid: String::new(),
+                        causes: causes.clone(),
+                        retry_after_seconds: 0,
+                    }),
+                }
+            }
             Error::Conflict(msg) => Status {
                 status: Some(StatusSummary::Failure),
                 message: msg.clone(),
