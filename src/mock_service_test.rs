@@ -1904,6 +1904,34 @@ mod tests {
         assert_eq!(widgets.get("w").await.unwrap().spec.replicas, 4);
     }
 
+    /// A derived custom resource, which has no `Default`, can register a status subresource.
+    #[tokio::test]
+    async fn test_custom_resource_status_subresource_registration() {
+        use widget::{Widget, WidgetStatus};
+
+        let client = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .with_status_subresource::<Widget>()
+            .build()
+            .await
+            .unwrap();
+        let widgets: kube::Api<Widget> = kube::Api::namespaced(client, "default");
+        let mut current = widgets
+            .create(&PostParams::default(), &widget::new("w"))
+            .await
+            .unwrap();
+
+        current.status = Some(WidgetStatus {
+            replicas: 9,
+            selector: "changed".to_string(),
+        });
+        let replaced = widgets
+            .replace("w", &PostParams::default(), &current)
+            .await
+            .unwrap();
+        assert_eq!(replaced.status.unwrap().replicas, 1);
+    }
+
     /// Without a selector path the `Scale` has no selector, and without
     /// registration a custom resource has no `/scale` path.
     #[tokio::test]

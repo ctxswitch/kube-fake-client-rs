@@ -182,15 +182,10 @@ impl ClientBuilder {
     /// ```
     pub fn with_status_subresource<K>(mut self) -> Self
     where
-        K: Resource + Serialize + Default,
+        K: Resource<DynamicType = ()>,
     {
-        // Get GVK from a default instance
-        let dummy = K::default();
-        let dummy_value = serde_json::to_value(&dummy)
-            .expect("Failed to serialize default object - this should not happen with valid Kubernetes types");
-        let gvk = extract_gvk(&dummy_value)
-            .expect("Failed to extract GVK from resource - ensure apiVersion and kind are set");
-        self.with_status_subresource.push(gvk);
+        self.with_status_subresource
+            .push(GVK::new(K::group(&()), K::version(&()), K::kind(&())));
         self
     }
 
