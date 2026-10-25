@@ -4,10 +4,10 @@ use crate::utils::{
     deletion_timestamp_equal, ensure_metadata, increment_generation, should_be_deleted,
 };
 use crate::{Error, Result};
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
@@ -344,11 +344,32 @@ impl ObjectTracker {
             ));
         }
 
+        if existing_meta.deletion_timestamp.is_some() {
+            let existing_finalizers = existing_meta.finalizers.as_deref().unwrap_or_default();
+            let added: BTreeSet<&String> = new_meta
+                .finalizers
+                .iter()
+                .flatten()
+                .filter(|f| !existing_finalizers.contains(f))
+                .collect();
+            if !added.is_empty() {
+                let added: Vec<String> = added.iter().map(|f| format!("{f:?}")).collect();
+                return Err(Error::InvalidRequest(format!(
+                    "metadata.finalizers: Forbidden: no new finalizers can be added if the object is being deleted, found new finalizers []string{{{}}}",
+                    added.join(", ")
+                )));
+            }
+        }
+
         object["metadata"] = serde_json::to_value(&new_meta)?;
 
-        // Delete if conditions are met
+        // The last finalizer was removed. The stored copy still carries the old
+        // finalizers, so remove it directly rather than through `delete`. Like
+        // kube-apiserver, return the request object.
         if should_be_deleted(&new_meta) {
-            return self.delete(gvr, namespace, &name, true);
+            let mut objects = self.objects.write().expect("lock poisoned");
+            self.remove_locked(&mut objects, gvr, namespace, &name, true)?;
+            return Ok(object);
         }
 
         let stored = StoredObject {
@@ -371,12 +392,17 @@ impl ObjectTracker {
     /// Deletes `name` and optionally cascades to all objects that transitively
     /// reference it via `ownerReferences`.
     ///
-    /// When `cascade` is `true`, uses an iterative worklist under a single write
-    /// lock: removes the target object, collects its UID, scans for dependents
+    /// An object with finalizers is not removed. It is marked as terminating
+    /// (see [`Self::mark_for_deletion`]) and returned, and its dependents stay
+    /// until an update removes its last finalizer.
+    ///
+    /// Otherwise the object is removed. When `cascade` is `true`, an iterative
+    /// worklist under a single write lock collects its UID, scans for dependents
     /// respecting Kubernetes scope rules (cluster-scoped owners scan all
     /// namespaces, namespaced owners scan only their own namespace), removes
     /// them, collects their UIDs, and repeats until no more dependents are found.
-    /// A visited set prevents cycles.
+    /// A visited set prevents cycles. A dependent with finalizers is marked
+    /// instead of removed, and its own dependents are left in place.
     ///
     /// When `cascade` is `false`, only the target object is removed — no
     /// dependent scanning or deletion is performed.
@@ -385,6 +411,66 @@ impl ObjectTracker {
 
         let mut objects = self.objects.write().expect("lock poisoned");
 
+        let stored = objects
+            .get_mut(gvr)
+            .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
+            .and_then(|ns_objects| ns_objects.get_mut(name))
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
+
+        if stored
+            .metadata
+            .finalizers
+            .as_ref()
+            .is_some_and(|f| !f.is_empty())
+        {
+            self.mark_for_deletion(stored)?;
+            debug!("Marked object for deletion: {}/{}", namespace, name);
+            return Ok(stored.data.clone());
+        }
+
+        self.remove_locked(&mut objects, gvr, namespace, name, cascade)
+    }
+
+    /// Marks `stored` as terminating the way kube-apiserver's `markAsDeleting`
+    /// does: bumps `generation` on the first mark, sets `deletionTimestamp` to
+    /// now unless an earlier one is set, and sets `deletionGracePeriodSeconds`
+    /// to 0. The resource version changes only when the metadata did, so a
+    /// repeated delete is a no-op.
+    fn mark_for_deletion(&self, stored: &mut StoredObject) -> Result<()> {
+        let meta = &mut stored.metadata;
+        let now = jiff::Timestamp::now();
+        let mut changed = false;
+
+        if meta.deletion_timestamp.is_none() && meta.generation.is_some_and(|g| g > 0) {
+            meta.generation = Some(increment_generation(meta.generation));
+            changed = true;
+        }
+        if meta.deletion_timestamp.as_ref().is_none_or(|ts| ts.0 > now) {
+            meta.deletion_timestamp = Some(Time(now));
+            changed = true;
+        }
+        if meta.deletion_grace_period_seconds != Some(0) {
+            meta.deletion_grace_period_seconds = Some(0);
+            changed = true;
+        }
+
+        if changed {
+            meta.resource_version = Some(self.next_resource_version());
+            stored.data["metadata"] = serde_json::to_value(&stored.metadata)?;
+        }
+        Ok(())
+    }
+
+    /// Removes `name` from `objects` and, when `cascade` is `true`, its
+    /// dependents. The caller holds the write lock.
+    fn remove_locked(
+        &self,
+        objects: &mut ObjectStorage,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+        cascade: bool,
+    ) -> Result<Value> {
         let stored = objects
             .get_mut(gvr)
             .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
@@ -415,8 +501,32 @@ impl ObjectTracker {
         }
 
         while let Some((uid, owner_ns)) = pending.pop() {
-            let dependents = Self::find_dependents_locked(&objects, &uid, &owner_ns);
+            let dependents = Self::find_dependents_locked(objects, &uid, &owner_ns);
             for (dep_gvr, dep_ns, dep_name) in dependents {
+                let Some(dep_stored) = objects
+                    .get_mut(&dep_gvr)
+                    .and_then(|g| g.get_mut(&dep_ns))
+                    .and_then(|n| n.get_mut(&dep_name))
+                else {
+                    continue;
+                };
+                // A dependent with finalizers stays until they are removed, and one
+                // already being deleted is left as it is, as the garbage collector does.
+                if dep_stored
+                    .metadata
+                    .finalizers
+                    .as_ref()
+                    .is_some_and(|f| !f.is_empty())
+                {
+                    if dep_stored.metadata.deletion_timestamp.is_none() {
+                        self.mark_for_deletion(dep_stored)?;
+                        debug!(
+                            "Cascade-marked dependent for deletion: {}/{}",
+                            dep_ns, dep_name
+                        );
+                    }
+                    continue;
+                }
                 if let Some(dep_stored) = objects
                     .get_mut(&dep_gvr)
                     .and_then(|g| g.get_mut(&dep_ns))

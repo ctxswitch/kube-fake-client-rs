@@ -1445,6 +1445,33 @@ mod tests {
         assert!(pods.get("child-pod").await.is_err());
     }
 
+    /// Delete of an object with finalizers keeps it until the last finalizer is removed.
+    #[tokio::test]
+    async fn test_delete_with_finalizers_waits_for_finalizers() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("test-pod".to_string());
+        pod.metadata.finalizers = Some(vec!["example.com/cleanup".to_string()]);
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        pods.delete("test-pod", &DeleteParams::default())
+            .await
+            .unwrap();
+        let terminating = pods.get("test-pod").await.unwrap();
+        assert!(terminating.metadata.deletion_timestamp.is_some());
+
+        pods.patch(
+            "test-pod",
+            &PatchParams::default(),
+            &Patch::Merge(json!({ "metadata": { "finalizers": null } })),
+        )
+        .await
+        .unwrap();
+        assert!(pods.get("test-pod").await.is_err());
+    }
+
     /// Delete with `DeleteParams::orphan()` should NOT cascade to children.
     #[tokio::test]
     async fn test_delete_orphan_does_not_cascade() {
