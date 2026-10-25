@@ -227,6 +227,28 @@ impl ObjectTracker {
         let mut meta = self.extract_metadata(&object)?;
         let name = Self::extract_name(&meta)?;
 
+        // kube-apiserver's NamespaceLifecycle admission. `add` skips it, as
+        // seeding bypasses admission.
+        if !namespace.is_empty()
+            && self
+                .get(&namespaces_gvr(), "", namespace)
+                .is_ok_and(|ns| ns["status"]["phase"] == "Terminating")
+        {
+            return Err(Error::Forbidden {
+                kind: gvr.resource.clone(),
+                group: gvr.group.clone(),
+                name,
+                message: format!(
+                    "unable to create new content in namespace {namespace} because it is being terminated"
+                ),
+                causes: vec![kube::core::response::StatusCause {
+                    reason: "NamespaceTerminating".to_string(),
+                    message: format!("namespace {namespace} is being terminated"),
+                    field: "metadata.namespace".to_string(),
+                }],
+            });
+        }
+
         // Validate resource version not set for create
         if meta
             .resource_version

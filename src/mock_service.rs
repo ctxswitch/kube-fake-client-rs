@@ -1123,7 +1123,7 @@ impl MockService {
                 Some(kube::core::response::StatusSummary::Failure) | None => "Failure",
             };
 
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "kind": "Status",
                 "apiVersion": "v1",
                 "status": status_str,
@@ -1131,6 +1131,10 @@ impl MockService {
                 "reason": error_response.reason,
                 "code": error_response.code
             });
+            if let Some(details) = &error_response.details {
+                body["details"] =
+                    serde_json::to_value(details).expect("StatusDetails serializes to JSON");
+            }
 
             Ok(Response::builder()
                 .status(status_code)

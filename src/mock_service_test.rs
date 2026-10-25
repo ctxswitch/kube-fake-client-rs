@@ -1508,6 +1508,29 @@ mod tests {
         let held = configmaps.get("held").await.unwrap();
         assert!(held.metadata.deletion_timestamp.is_some());
 
+        // No new content in a terminating namespace
+        let mut new = ConfigMap::default();
+        new.metadata.name = Some("new".to_string());
+        match configmaps.create(&pp, &new).await {
+            Err(kube::Error::Api(err)) => {
+                assert_eq!(err.code, 403);
+                assert_eq!(err.reason, "Forbidden");
+                assert_eq!(
+                    err.message,
+                    "configmaps \"new\" is forbidden: unable to create new content in namespace team-a because it is being terminated"
+                );
+                let details = err.details.expect("forbidden status has details");
+                assert_eq!(details.kind, "configmaps");
+                assert_eq!(details.name, "new");
+                assert_eq!(details.causes.len(), 1);
+                assert_eq!(details.causes[0].reason, "NamespaceTerminating");
+                assert_eq!(details.causes[0].field, "metadata.namespace");
+            }
+            other => panic!("expected 403 Forbidden, got {other:?}"),
+        }
+        assert!(configmaps.get("new").await.is_err());
+
+        // Existing content can still drop its finalizers
         configmaps
             .patch(
                 "held",

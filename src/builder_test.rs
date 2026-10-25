@@ -19,6 +19,35 @@ mod tests {
         assert_eq!(retrieved.metadata.name, Some("test-pod".to_string()));
     }
 
+    /// Seeding bypasses the terminating-namespace admission check.
+    #[tokio::test]
+    async fn test_builder_seeds_objects_in_terminating_namespace() {
+        use k8s_openapi::api::core::v1::{ConfigMap, Namespace, NamespaceStatus};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
+
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("team-a".to_string());
+        ns.metadata.finalizers = Some(vec!["example.com/ns".to_string()]);
+        ns.metadata.deletion_timestamp = Some(Time(jiff::Timestamp::now()));
+        ns.status = Some(NamespaceStatus {
+            phase: Some("Terminating".to_string()),
+            ..Default::default()
+        });
+        let mut cm = ConfigMap::default();
+        cm.metadata.name = Some("seeded".to_string());
+        cm.metadata.namespace = Some("team-a".to_string());
+
+        let client = ClientBuilder::new()
+            .with_object(ns)
+            .with_object(cm)
+            .build()
+            .await
+            .unwrap();
+
+        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client, "team-a");
+        assert!(configmaps.get("seeded").await.is_ok());
+    }
+
     #[tokio::test]
     async fn test_builder_with_status_subresource() {
         // Status subresource test - just verify it builds without error

@@ -16,7 +16,7 @@
 - **Status subresources:** Configure separate spec and status updates for resource types that use them.
 - **Resource versions:** Assign versions automatically and return conflicts for stale writes.
 - **Finalizers:** Deleting an object with finalizers sets `deletionTimestamp` and keeps it until an update removes the last finalizer. Owner-reference cascade follows the same rule for each dependent.
-- **Namespace deletion:** Deleting a Namespace marks it `Terminating` and deletes everything in it. The Namespace is removed once it is empty and has no finalizers.
+- **Namespace deletion:** Deleting a Namespace marks it `Terminating` and deletes everything in it. The Namespace is removed once it is empty and has no finalizers. Creating objects in a terminating namespace returns 403 Forbidden; objects loaded with `with_object` or fixtures are still stored.
 - **Namespace scope:** Keep namespaced resources isolated while also supporting cluster-scoped resources.
 - **Selectors and indexes:** Filter with Kubernetes label and field selector syntax, including custom indexes.
 - **Custom resources:** Register custom resource types and use them through `Api<K>`.
