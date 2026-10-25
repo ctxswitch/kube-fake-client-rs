@@ -13,7 +13,7 @@
 ### Kubernetes behavior
 
 - **`kube::Api<K>` operations:** Create, get, list, update, patch, and delete resources through the usual API.
-- **Status subresources:** Configure separate spec and status updates for resource types that use them.
+- **Status subresources:** Keep spec and status updates separate for built-in kinds that have a status subresource, and for custom resources you register.
 - **Resource versions:** Assign versions automatically and return conflicts for stale writes.
 - **Finalizers:** Deleting an object with finalizers sets `deletionTimestamp` and keeps it until an update removes the last finalizer. Owner-reference cascade follows the same rule for each dependent.
 - **Namespace deletion:** Deleting a Namespace marks it `Terminating` and deletes everything in it. The Namespace is removed once it is empty and has no finalizers. Creating objects in a terminating namespace returns 403 Forbidden; objects loaded with `with_object` or fixtures are still stored.
@@ -137,32 +137,16 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 
 ### Status subresources
 
-Configure a `Deployment` status subresource:
+Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
+
+Register a status subresource for a custom resource:
 
 ```rust
-use k8s_openapi::api::apps::v1::Deployment;
-use kube::api::Api;
-
-#[tokio::test]
-async fn test_status_update_isolation() -> Result<(), Box<dyn std::error::Error>> {
-    let mut deployment = Deployment::default();
-    deployment.metadata.name = Some("my-app".to_string());
-    deployment.metadata.namespace = Some("default".to_string());
-
-    // Enable status subresource for Deployment
-    let client = ClientBuilder::new()
-        .with_object(deployment)
-        .with_status_subresource::<Deployment>()
-        .build()
-        .await?;
-
-    let api: Api<Deployment> = Api::namespaced(client, "default");
-
-    // Status updates don't affect spec, and vice versa
-    // (implementation details omitted for brevity)
-
-    Ok(())
-}
+let client = ClientBuilder::new()
+    .with_resource::<MyApp>()
+    .with_status_subresource::<MyApp>()
+    .build()
+    .await?;
 ```
 
 ### YAML fixtures

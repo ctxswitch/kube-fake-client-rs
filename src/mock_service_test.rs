@@ -1543,6 +1543,80 @@ mod tests {
         assert!(namespaces.get("team-a").await.is_err());
     }
 
+    /// A Deployment gets the spec/status split without `with_status_subresource`.
+    #[tokio::test]
+    async fn test_builtin_status_subresource_needs_no_configuration() {
+        use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, DeploymentStatus};
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
+        let pp = PostParams::default();
+
+        let mut deployment = Deployment::default();
+        deployment.metadata.name = Some("web".to_string());
+        deployment.spec = Some(DeploymentSpec {
+            replicas: Some(1),
+            ..Default::default()
+        });
+        deployments.create(&pp, &deployment).await.unwrap();
+
+        let mut current = deployments.get("web").await.unwrap();
+        current.status = Some(DeploymentStatus {
+            replicas: Some(5),
+            ..Default::default()
+        });
+        deployments.replace("web", &pp, &current).await.unwrap();
+        assert!(deployments.get("web").await.unwrap().status.is_none());
+
+        deployments
+            .patch_status(
+                "web",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 9 }, "status": { "replicas": 1 } })),
+            )
+            .await
+            .unwrap();
+        let current = deployments.get("web").await.unwrap();
+        assert_eq!(current.spec.and_then(|s| s.replicas), Some(1));
+        assert_eq!(current.status.and_then(|s| s.replicas), Some(1));
+    }
+
+    /// A kind without a status subresource has no `/status` path.
+    #[tokio::test]
+    async fn test_status_on_kind_without_status_subresource_returns_404() {
+        use k8s_openapi::api::core::v1::ConfigMap;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client, "default");
+        let mut cm = ConfigMap::default();
+        cm.metadata.name = Some("cm".to_string());
+        cm.data = Some(BTreeMap::from([("key".to_string(), "value".to_string())]));
+        let created = configmaps
+            .create(&PostParams::default(), &cm)
+            .await
+            .unwrap();
+
+        let needle = "configmaps/status \"cm\"";
+        assert_subresource_not_found(configmaps.get_status("cm").await, needle);
+        assert_subresource_not_found(
+            configmaps
+                .replace_status("cm", &PostParams::default(), &created)
+                .await,
+            needle,
+        );
+        assert_subresource_not_found(
+            configmaps
+                .patch_status(
+                    "cm",
+                    &PatchParams::default(),
+                    &Patch::Merge(json!({ "data": { "key": "changed" } })),
+                )
+                .await,
+            needle,
+        );
+        assert_eq!(configmaps.get("cm").await.unwrap(), created);
+    }
+
     /// Delete with `DeleteParams::orphan()` should NOT cascade to children.
     #[tokio::test]
     async fn test_delete_orphan_does_not_cascade() {

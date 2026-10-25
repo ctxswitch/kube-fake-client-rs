@@ -377,41 +377,98 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_register_status_subresource_on_create() {
+    fn test_main_update_does_not_set_status() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
+        let gvr = GVR::new("apps", "v1", "deployments");
+        let gvk = GVK::new("apps", "v1", "Deployment");
+        let deployment = json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": "web", "namespace": "default" },
+            "spec": { "replicas": 1 }
+        });
+        let mut created = tracker.create(&gvr, &gvk, deployment, "default").unwrap();
 
-        // Initially no status subresource registered
-        assert!(!tracker.has_status_subresource(&gvk));
+        created["status"] = json!({ "replicas": 5 });
+        let updated = tracker
+            .update(&gvr, &gvk, created, "default", false)
+            .unwrap();
 
-        // Create a Pod with a status field
-        let mut obj = create_test_object("test-pod", "default");
-        obj["status"] = json!({"phase": "Pending"});
-
-        tracker.create(&gvr, &gvk, obj, "default").unwrap();
-
-        // Status subresource should be automatically registered
-        assert!(tracker.has_status_subresource(&gvk));
+        assert!(updated.get("status").is_none());
+        assert!(tracker
+            .get(&gvr, "default", "web")
+            .unwrap()
+            .get("status")
+            .is_none());
     }
 
     #[test]
-    fn test_auto_register_status_subresource_on_add() {
+    fn test_status_update_changes_only_status() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
+        let gvr = GVR::new("apps", "v1", "deployments");
+        let gvk = GVK::new("apps", "v1", "Deployment");
+        let deployment = json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": "web",
+                "namespace": "default",
+                "labels": { "app": "web" },
+                "annotations": { "note": "kept" },
+                "finalizers": ["example.com/cleanup"]
+            },
+            "spec": { "replicas": 1 }
+        });
+        let mut request = tracker.create(&gvr, &gvk, deployment, "default").unwrap();
 
-        // Initially no status subresource registered
+        request["spec"]["replicas"] = json!(9);
+        request["metadata"]["labels"] = json!({ "app": "other" });
+        request["metadata"]["annotations"] = json!({});
+        request["metadata"]["finalizers"] = json!([]);
+        request["status"] = json!({ "replicas": 1 });
+        let updated = tracker
+            .update(&gvr, &gvk, request, "default", true)
+            .unwrap();
+
+        assert_eq!(updated["status"]["replicas"], 1);
+        assert_eq!(updated["spec"]["replicas"], 1);
+        assert_eq!(updated["metadata"]["labels"]["app"], "web");
+        assert_eq!(updated["metadata"]["annotations"]["note"], "kept");
+        assert_eq!(
+            updated["metadata"]["finalizers"],
+            json!(["example.com/cleanup"])
+        );
+        assert_eq!(tracker.get(&gvr, "default", "web").unwrap(), updated);
+    }
+
+    #[test]
+    fn test_custom_resource_needs_registered_status_subresource() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("example.com", "v1", "widgets");
+        let gvk = GVK::new("example.com", "v1", "Widget");
+        let widget = json!({
+            "apiVersion": "example.com/v1",
+            "kind": "Widget",
+            "metadata": { "name": "w", "namespace": "default" },
+            "status": { "ready": false }
+        });
+        let mut created = tracker.create(&gvr, &gvk, widget, "default").unwrap();
         assert!(!tracker.has_status_subresource(&gvk));
 
-        // Add a Pod with a status field
-        let mut obj = create_test_object("test-pod", "default");
-        obj["status"] = json!({"phase": "Running"});
+        // Without registration a main update writes status
+        created["status"] = json!({ "ready": true });
+        let mut updated = tracker
+            .update(&gvr, &gvk, created, "default", false)
+            .unwrap();
+        assert_eq!(updated["status"]["ready"], true);
 
-        tracker.add(&gvr, &gvk, obj, "default").unwrap();
-
-        // Status subresource should be automatically registered
-        assert!(tracker.has_status_subresource(&gvk));
+        // Once registered, a main update keeps the stored status
+        tracker.add_status_subresource(gvk.clone());
+        updated["status"] = json!({ "ready": false });
+        let updated = tracker
+            .update(&gvr, &gvk, updated, "default", false)
+            .unwrap();
+        assert_eq!(updated["status"]["ready"], true);
     }
 
     #[test]
@@ -448,14 +505,12 @@ mod tests {
         let gvr = GVR::new("", "v1", "pods");
         let gvk = GVK::new("", "v1", "Pod");
 
-        // Create a Pod with status - this auto-registers status subresource
+        // Pod has a status subresource in discovery
         let mut obj = create_test_object("test-pod", "default");
         obj["status"] = json!({"phase": "Pending"});
 
         let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
         assert_eq!(created["status"]["phase"], "Pending");
-
-        // Verify status subresource was auto-registered
         assert!(tracker.has_status_subresource(&gvk));
 
         // Try to update spec AND status in a regular update

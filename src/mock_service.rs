@@ -561,6 +561,15 @@ impl MockService {
             if !Self::is_implemented_subresource(method.as_str(), sub) {
                 return Self::subresource_not_found_response(&parsed, sub);
             }
+            // A kind without a status subresource has no `/status` path. An
+            // unknown kind falls through to the handlers' own error.
+            let group = parsed.group.clone().unwrap_or_default();
+            if let Ok(kind) = self.resource_to_kind(&group, &parsed.version, &parsed.resource) {
+                let gvk = crate::tracker::GVK::new(group, parsed.version.clone(), kind);
+                if !self.client.tracker().has_status_subresource(&gvk) {
+                    return Self::subresource_not_found_response(&parsed, sub);
+                }
+            }
         }
 
         // Route based on HTTP method
