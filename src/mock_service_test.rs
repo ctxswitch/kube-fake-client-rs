@@ -1472,6 +1472,54 @@ mod tests {
         assert!(pods.get("test-pod").await.is_err());
     }
 
+    /// Deleting a Namespace deletes its contents and waits for their finalizers.
+    #[tokio::test]
+    async fn test_delete_namespace_deletes_contents_and_waits_for_finalizers() {
+        use k8s_openapi::api::core::v1::ConfigMap;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
+        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client, "team-a");
+        let pp = PostParams::default();
+
+        let mut ns = Namespace::default();
+        ns.metadata.name = Some("team-a".to_string());
+        namespaces.create(&pp, &ns).await.unwrap();
+        let mut plain = ConfigMap::default();
+        plain.metadata.name = Some("plain".to_string());
+        configmaps.create(&pp, &plain).await.unwrap();
+        let mut held = ConfigMap::default();
+        held.metadata.name = Some("held".to_string());
+        held.metadata.finalizers = Some(vec!["example.com/cleanup".to_string()]);
+        configmaps.create(&pp, &held).await.unwrap();
+
+        namespaces
+            .delete("team-a", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        let terminating = namespaces.get("team-a").await.unwrap();
+        assert!(terminating.metadata.deletion_timestamp.is_some());
+        assert_eq!(
+            terminating.status.and_then(|s| s.phase).as_deref(),
+            Some("Terminating")
+        );
+        assert!(configmaps.get("plain").await.is_err());
+        let held = configmaps.get("held").await.unwrap();
+        assert!(held.metadata.deletion_timestamp.is_some());
+
+        configmaps
+            .patch(
+                "held",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "metadata": { "finalizers": null } })),
+            )
+            .await
+            .unwrap();
+        assert!(configmaps.get("held").await.is_err());
+        assert!(namespaces.get("team-a").await.is_err());
+    }
+
     /// Delete with `DeleteParams::orphan()` should NOT cascade to children.
     #[tokio::test]
     async fn test_delete_orphan_does_not_cascade() {
