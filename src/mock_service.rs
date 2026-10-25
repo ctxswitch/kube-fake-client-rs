@@ -157,7 +157,7 @@ impl MockService {
     }
 
     /// Whether the fake handles `method` on `subresource`. Only `status` with GET, PUT or PATCH is
-    /// handled; every other pair returns 404.
+    /// handled.
     fn is_implemented_subresource(method: &str, subresource: &str) -> bool {
         subresource == "status" && matches!(method, "GET" | "PUT" | "PATCH")
     }
@@ -558,7 +558,7 @@ impl MockService {
             return Self::path_not_found_response();
         };
         if let Some(sub) = parsed.subresource.as_deref() {
-            if !Self::is_implemented_subresource(method.as_str(), sub) {
+            if sub != "status" {
                 return Self::subresource_not_found_response(&parsed, sub);
             }
             // A kind without a status subresource has no `/status` path. An
@@ -569,6 +569,9 @@ impl MockService {
                 if !self.client.tracker().has_status_subresource(&gvk) {
                     return Self::subresource_not_found_response(&parsed, sub);
                 }
+            }
+            if !Self::is_implemented_subresource(method.as_str(), sub) {
+                return Self::status_method_not_allowed_response();
             }
         }
 
@@ -1194,6 +1197,25 @@ impl MockService {
 
         Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
+            .header("Content-Type", CONTENT_TYPE_JSON)
+            .body(Full::new(Bytes::from(body.to_string())))
+            .expect("Failed to build response"))
+    }
+
+    /// 405 `Status` for an unsupported method on the `status` subresource.
+    fn status_method_not_allowed_response(
+    ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+        let body = serde_json::json!({
+            "kind": "Status",
+            "apiVersion": "v1",
+            "status": "Failure",
+            "message": "the server does not allow this method on the requested resource",
+            "reason": "MethodNotAllowed",
+            "code": 405
+        });
+
+        Ok(Response::builder()
+            .status(StatusCode::METHOD_NOT_ALLOWED)
             .header("Content-Type", CONTENT_TYPE_JSON)
             .body(Full::new(Bytes::from(body.to_string())))
             .expect("Failed to build response"))

@@ -1587,7 +1587,7 @@ mod tests {
         use k8s_openapi::api::core::v1::ConfigMap;
 
         let client = ClientBuilder::new().build().await.unwrap();
-        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client, "default");
+        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), "default");
         let mut cm = ConfigMap::default();
         cm.metadata.name = Some("cm".to_string());
         cm.data = Some(BTreeMap::from([("key".to_string(), "value".to_string())]));
@@ -1614,6 +1614,14 @@ mod tests {
                 .await,
             needle,
         );
+        let post = http::Request::post("/api/v1/namespaces/default/configmaps/cm/status")
+            .body(Vec::new())
+            .unwrap();
+        assert_subresource_not_found(client.request_text(post).await, needle);
+        let delete = http::Request::delete("/api/v1/namespaces/default/configmaps/cm/status")
+            .body(Vec::new())
+            .unwrap();
+        assert_subresource_not_found(client.request_text(delete).await, needle);
         assert_eq!(configmaps.get("cm").await.unwrap(), created);
     }
 
@@ -2556,6 +2564,20 @@ mod tests {
         }
     }
 
+    /// Asserts `result` is a 405 `MethodNotAllowed` Status.
+    fn assert_subresource_method_not_allowed<T>(result: Result<T, kube::Error>) {
+        if let Err(kube::Error::Api(err)) = result {
+            assert_eq!(err.code, 405, "unexpected status: {err:?}");
+            assert_eq!(err.reason, "MethodNotAllowed");
+            assert_eq!(
+                err.message,
+                "the server does not allow this method on the requested resource"
+            );
+        } else {
+            panic!("expected kube::Error::Api with code 405");
+        }
+    }
+
     fn labels_of(pod: &Pod) -> BTreeMap<String, String> {
         pod.metadata.labels.clone().unwrap_or_default()
     }
@@ -2647,28 +2669,54 @@ mod tests {
         );
     }
 
-    /// DELETE on the status subresource returns 404 and does not delete the parent.
+    /// DELETE on the status subresource returns 405 and does not change the parent.
     #[tokio::test]
-    async fn test_delete_on_status_subresource_returns_404() {
-        let (client, pods, _created) = client_with_pod_p().await;
+    async fn test_delete_on_status_subresource_returns_405() {
+        let (client, pods, created) = client_with_pod_p().await;
         let req = http::Request::delete("/api/v1/namespaces/default/pods/p/status")
             .body(Vec::new())
             .unwrap();
         let result = client.request_text(req).await;
-        assert_subresource_not_found(result, "pods/status \"p\"");
-        assert!(pods.get("p").await.is_ok());
+        assert_subresource_method_not_allowed(result);
+        let after = pods.get("p").await.unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(created).unwrap()
+        );
     }
 
-    /// POST on the status subresource returns 404.
+    /// POST on the status subresource returns 405 and leaves the parent unchanged.
     #[tokio::test]
-    async fn test_post_on_status_subresource_returns_404() {
-        let (client, _pods, created) = client_with_pod_p().await;
+    async fn test_post_on_status_subresource_returns_405() {
+        let (client, pods, created) = client_with_pod_p().await;
         let req = http::Request::post("/api/v1/namespaces/default/pods/p/status")
             .header("Content-Type", "application/json")
             .body(serde_json::to_vec(&created).unwrap())
             .unwrap();
         let result = client.request_text(req).await;
-        assert_subresource_not_found(result, "pods/status \"p\"");
+        assert_subresource_method_not_allowed(result);
+        let after = pods.get("p").await.unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(created).unwrap()
+        );
+    }
+
+    /// POST on a different unimplemented subresource continues to return 404.
+    #[tokio::test]
+    async fn test_post_on_unimplemented_subresource_returns_404() {
+        let (client, pods, created) = client_with_pod_p().await;
+        let req = http::Request::post("/api/v1/namespaces/default/pods/p/resize")
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&created).unwrap())
+            .unwrap();
+        let result = client.request_text(req).await;
+        assert_subresource_not_found(result, "pods/resize \"p\"");
+        let after = pods.get("p").await.unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(created).unwrap()
+        );
     }
 
     /// Unimplemented subresources on cluster-scoped resources return 404.
