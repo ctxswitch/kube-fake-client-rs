@@ -14,6 +14,7 @@
 
 - **`kube::Api<K>` operations:** Create, get, list, update, patch, and delete resources through the usual API.
 - **Status subresources:** Keep spec and status updates separate for built-in kinds that have a status subresource, and for custom resources you register.
+- **Scale subresources:** Read and change replica counts through `/scale` for Deployments, ReplicaSets, StatefulSets and ReplicationControllers.
 - **Resource versions:** Assign versions automatically and return conflicts for stale writes.
 - **Finalizers:** Deleting an object with finalizers sets `deletionTimestamp` and keeps it until an update removes the last finalizer. Owner-reference cascade follows the same rule for each dependent.
 - **Namespace deletion:** Deleting a Namespace marks it `Terminating` and deletes everything in it. The Namespace is removed once it is empty and has no finalizers. Creating objects in a terminating namespace returns 403 Forbidden; objects loaded with `with_object` or fixtures are still stored.
@@ -146,6 +147,17 @@ let client = ClientBuilder::new()
     .with_resource::<MyApp>()
     .with_status_subresource::<MyApp>()
     .build()
+    .await?;
+```
+
+### Scale subresources
+
+Deployment, ReplicaSet, StatefulSet and ReplicationController serve `get_scale`, `replace_scale` and `patch_scale` as kube-apiserver does. The `Scale` is built from the parent, a patch applies to the `Scale`, and a write changes only the parent's `spec.replicas`. Negative replicas return 422, and a stale `resourceVersion` or mismatched `uid` returns 409. `/scale` on other kinds returns 404.
+
+```rust
+let deployments: Api<Deployment> = Api::namespaced(client, "default");
+deployments
+    .patch_scale("web", &PatchParams::default(), &Patch::Merge(json!({ "spec": { "replicas": 3 } })))
     .await?;
 ```
 

@@ -1,5 +1,6 @@
 use crate::discovery::Discovery;
 use crate::registry::ResourceRegistry;
+use crate::scale::ScaleSubresource;
 use crate::utils::{
     deletion_timestamp_equal, ensure_metadata, increment_generation, should_be_deleted,
 };
@@ -130,6 +131,12 @@ impl ObjectTracker {
                 .read()
                 .expect("lock poisoned")
                 .contains(gvk)
+    }
+
+    /// The scale subresource of `gvk`, for the built-in kinds discovery lists
+    /// with one.
+    pub(crate) fn scale_subresource(&self, gvk: &GVK) -> Option<ScaleSubresource> {
+        Discovery::has_subresource(gvk, "scale").then(|| ScaleSubresource::built_in(&gvk.kind))
     }
 
     /// Validate that namespace usage matches the resource's scope.

@@ -1625,6 +1625,225 @@ mod tests {
         assert_eq!(configmaps.get("cm").await.unwrap(), created);
     }
 
+    fn web_deployment() -> k8s_openapi::api::apps::v1::Deployment {
+        serde_json::from_value(json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": "web", "labels": { "team": "a" } },
+            "spec": {
+                "replicas": 1,
+                "selector": { "matchLabels": { "app": "web" } },
+                "template": {
+                    "metadata": { "labels": { "app": "web" } },
+                    "spec": { "containers": [{ "name": "web", "image": "nginx" }] }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    /// The scale subresource round-trips through a Deployment.
+    #[tokio::test]
+    async fn test_deployment_scale_round_trip() {
+        use k8s_openapi::api::apps::v1::Deployment;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
+        let created = deployments
+            .create(&PostParams::default(), &web_deployment())
+            .await
+            .unwrap();
+
+        let scale = deployments.get_scale("web").await.unwrap();
+        assert_eq!(scale.metadata.name.as_deref(), Some("web"));
+        assert_eq!(scale.metadata.uid, created.metadata.uid);
+        assert_eq!(
+            scale.metadata.resource_version,
+            created.metadata.resource_version
+        );
+        assert_eq!(scale.spec.as_ref().and_then(|s| s.replicas), Some(1));
+        let status = scale.status.clone().unwrap();
+        assert_eq!(status.replicas, 0);
+        assert_eq!(status.selector.as_deref(), Some("app=web"));
+
+        let mut desired = scale;
+        desired.spec.as_mut().unwrap().replicas = Some(3);
+        let replaced = deployments
+            .replace_scale("web", &PostParams::default(), &desired)
+            .await
+            .unwrap();
+        assert_eq!(replaced.spec.and_then(|s| s.replicas), Some(3));
+
+        let patched = deployments
+            .patch_scale(
+                "web",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 5 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patched.spec.and_then(|s| s.replicas), Some(5));
+
+        let parent = deployments.get("web").await.unwrap();
+        let spec = parent.spec.clone().unwrap();
+        assert_eq!(spec.replicas, Some(5));
+        assert_eq!(spec.template, created.spec.clone().unwrap().template);
+        assert_eq!(parent.metadata.labels, created.metadata.labels);
+        assert_eq!(parent.status, created.status);
+    }
+
+    /// StatefulSet and ReplicaSet serve the scale subresource too.
+    #[tokio::test]
+    async fn test_statefulset_and_replicaset_scale() {
+        use k8s_openapi::api::apps::v1::{ReplicaSet, StatefulSet};
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let spec = json!({
+            "replicas": 2,
+            "selector": { "matchLabels": { "app": "db" } },
+            "template": {
+                "metadata": { "labels": { "app": "db" } },
+                "spec": { "containers": [{ "name": "db", "image": "postgres" }] }
+            }
+        });
+
+        let statefulsets: kube::Api<StatefulSet> = kube::Api::namespaced(client.clone(), "default");
+        let sts: StatefulSet = serde_json::from_value(json!({
+            "apiVersion": "apps/v1", "kind": "StatefulSet",
+            "metadata": { "name": "db" }, "spec": spec
+        }))
+        .unwrap();
+        statefulsets
+            .create(&PostParams::default(), &sts)
+            .await
+            .unwrap();
+        let scale = statefulsets.get_scale("db").await.unwrap();
+        assert_eq!(scale.spec.and_then(|s| s.replicas), Some(2));
+        assert_eq!(
+            scale.status.and_then(|s| s.selector).as_deref(),
+            Some("app=db")
+        );
+        statefulsets
+            .patch_scale(
+                "db",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 4 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            statefulsets.get("db").await.unwrap().spec.unwrap().replicas,
+            Some(4)
+        );
+
+        let replicasets: kube::Api<ReplicaSet> = kube::Api::namespaced(client, "default");
+        let rs: ReplicaSet = serde_json::from_value(json!({
+            "apiVersion": "apps/v1", "kind": "ReplicaSet",
+            "metadata": { "name": "db" }, "spec": spec
+        }))
+        .unwrap();
+        replicasets
+            .create(&PostParams::default(), &rs)
+            .await
+            .unwrap();
+        assert_eq!(
+            replicasets
+                .get_scale("db")
+                .await
+                .unwrap()
+                .spec
+                .and_then(|s| s.replicas),
+            Some(2)
+        );
+        replicasets
+            .patch_scale(
+                "db",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 0 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replicasets.get("db").await.unwrap().spec.unwrap().replicas,
+            Some(0)
+        );
+    }
+
+    /// Scale writes validate replicas, the uid precondition and the resource version.
+    #[tokio::test]
+    async fn test_scale_write_validation() {
+        use k8s_openapi::api::apps::v1::Deployment;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
+        deployments
+            .create(&PostParams::default(), &web_deployment())
+            .await
+            .unwrap();
+        let scale = deployments.get_scale("web").await.unwrap();
+
+        let expect_code = |result: Result<_, kube::Error>, code: u16| match result {
+            Err(kube::Error::Api(err)) => assert_eq!(err.code, code, "{err:?}"),
+            other => panic!("expected {code}, got {other:?}"),
+        };
+
+        let mut negative = scale.clone();
+        negative.spec.as_mut().unwrap().replicas = Some(-1);
+        let result = deployments
+            .replace_scale("web", &PostParams::default(), &negative)
+            .await;
+        if let Err(kube::Error::Api(err)) = &result {
+            assert_eq!(
+                err.message,
+                "Scale.autoscaling \"web\" is invalid: spec.replicas: Invalid value: -1: must be greater than or equal to 0"
+            );
+        }
+        expect_code(result, 422);
+
+        let mut wrong_uid = scale.clone();
+        wrong_uid.metadata.uid = Some("other".to_string());
+        expect_code(
+            deployments
+                .replace_scale("web", &PostParams::default(), &wrong_uid)
+                .await,
+            409,
+        );
+
+        let mut stale = scale.clone();
+        stale.metadata.resource_version = Some("1".to_string());
+        deployments
+            .patch_scale(
+                "web",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 2 } })),
+            )
+            .await
+            .unwrap();
+        expect_code(
+            deployments
+                .replace_scale("web", &PostParams::default(), &stale)
+                .await,
+            409,
+        );
+
+        assert_eq!(
+            deployments.get("web").await.unwrap().spec.unwrap().replicas,
+            Some(2)
+        );
+    }
+
+    /// A kind without a scale subresource has no `/scale` path.
+    #[tokio::test]
+    async fn test_scale_on_pod_returns_404() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("p".to_string());
+        pods.create(&PostParams::default(), &pod).await.unwrap();
+
+        assert_subresource_not_found(pods.get_scale("p").await, "pods/scale \"p\"");
+    }
+
     /// Delete with `DeleteParams::orphan()` should NOT cascade to children.
     #[tokio::test]
     async fn test_delete_orphan_does_not_cascade() {
