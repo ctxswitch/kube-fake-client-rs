@@ -137,7 +137,7 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 
 ### Status subresources
 
-Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. An update of the main resource keeps the stored `status`, and a status update changes only `status`.
+Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
 
 Register a status subresource for a custom resource:
 

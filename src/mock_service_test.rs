@@ -1581,6 +1581,42 @@ mod tests {
         assert_eq!(current.status.and_then(|s| s.replicas), Some(1));
     }
 
+    /// A kind without a status subresource has no `/status` path.
+    #[tokio::test]
+    async fn test_status_on_kind_without_status_subresource_returns_404() {
+        use k8s_openapi::api::core::v1::ConfigMap;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let configmaps: kube::Api<ConfigMap> = kube::Api::namespaced(client, "default");
+        let mut cm = ConfigMap::default();
+        cm.metadata.name = Some("cm".to_string());
+        cm.data = Some(BTreeMap::from([("key".to_string(), "value".to_string())]));
+        let created = configmaps
+            .create(&PostParams::default(), &cm)
+            .await
+            .unwrap();
+
+        let needle = "configmaps/status \"cm\"";
+        assert_subresource_not_found(configmaps.get_status("cm").await, needle);
+        assert_subresource_not_found(
+            configmaps
+                .replace_status("cm", &PostParams::default(), &created)
+                .await,
+            needle,
+        );
+        assert_subresource_not_found(
+            configmaps
+                .patch_status(
+                    "cm",
+                    &PatchParams::default(),
+                    &Patch::Merge(json!({ "data": { "key": "changed" } })),
+                )
+                .await,
+            needle,
+        );
+        assert_eq!(configmaps.get("cm").await.unwrap(), created);
+    }
+
     /// Delete with `DeleteParams::orphan()` should NOT cascade to children.
     #[tokio::test]
     async fn test_delete_orphan_does_not_cascade() {
