@@ -8,7 +8,7 @@ use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
 use crate::label_selector;
 use crate::managed_fields::apply_field_ownership;
-use crate::scale::{self, ScaleSubresource};
+use crate::scale;
 use crate::tracker::{GVK, GVR};
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt};
@@ -571,24 +571,17 @@ impl MockService {
             match self.resource_to_kind(&group, &parsed.version, &parsed.resource) {
                 Ok(kind) => {
                     let gvk = GVK::new(group, parsed.version.clone(), kind);
-                    let tracker = self.client.tracker();
                     if sub == "scale" {
-                        let Some(scale) = tracker.scale_subresource(&gvk) else {
-                            return Self::subresource_not_found_response(&parsed, sub);
-                        };
-                        if !implemented {
-                            return Self::method_not_allowed_response();
-                        }
                         return self.handle_scale(
                             method.as_str(),
                             &parsed,
                             &gvk,
-                            &scale,
                             &body_bytes,
                             content_type.as_deref(),
+                            query.as_deref(),
                         );
                     }
-                    if !tracker.has_status_subresource(&gvk) {
+                    if !self.client.tracker().has_status_subresource(&gvk) {
                         return Self::subresource_not_found_response(&parsed, sub);
                     }
                     if !implemented {
@@ -627,34 +620,78 @@ impl MockService {
     /// GET, PUT and PATCH on `…/{name}/scale`, as kube-apiserver's scale storage
     /// serves them: the `Scale` is built from the parent, a PATCH applies to
     /// that `Scale`, and a write changes only the parent's replica count. The
-    /// `Scale`'s `resourceVersion` is the parent's optimistic lock.
+    /// `Scale`'s `resourceVersion` is the parent's optimistic lock. A kind
+    /// without a scale subresource returns 404, and other methods return 405.
     fn handle_scale(
         &self,
         method: &str,
         parsed: &ParsedPath,
         gvk: &GVK,
-        scale: &ScaleSubresource,
         body: &Bytes,
         content_type: Option<&str>,
+        query: Option<&str>,
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+        let tracker = self.client.tracker();
+        let Some(scale) = tracker.scale_subresource(gvk) else {
+            return Self::subresource_not_found_response(parsed, "scale");
+        };
+        if !Self::is_implemented_subresource(method, "scale") {
+            return Self::method_not_allowed_response();
+        }
         let namespace = Self::extract_namespace(parsed);
         let name = parsed.name.as_deref().ok_or("Name required for scale")?;
         let gvr = GVR::new(&gvk.group, &gvk.version, &parsed.resource);
-        let tracker = self.client.tracker();
+        let input: Value = if method == "GET" {
+            Value::Null
+        } else {
+            serde_json::from_slice(body)?
+        };
+        let patch_type = Self::determine_patch_type(content_type);
+
+        if let Some(ref interceptors) = self.client.interceptors {
+            let intercepted = match method {
+                "GET" => interceptors.get_scale.as_ref().map(|get_scale| {
+                    get_scale(interceptor::GetScaleContext {
+                        client: &self.client,
+                        namespace: &namespace,
+                        name,
+                    })
+                }),
+                "PUT" => interceptors.replace_scale.as_ref().map(|replace_scale| {
+                    replace_scale(interceptor::ReplaceScaleContext {
+                        client: &self.client,
+                        object: &input,
+                        namespace: &namespace,
+                        name,
+                        params: &PostParams::default(),
+                    })
+                }),
+                _ => interceptors.patch_scale.as_ref().map(|patch_scale| {
+                    patch_scale(interceptor::PatchScaleContext {
+                        client: &self.client,
+                        patch: &input,
+                        namespace: &namespace,
+                        name,
+                        params: &Self::parse_patch_params(query),
+                        patch_type,
+                    })
+                }),
+            };
+            match intercepted {
+                Some(Ok(Some(result))) => return Self::success_response(result),
+                Some(Err(e)) => return Self::error_to_response(e),
+                Some(Ok(None)) | None => {}
+            }
+        }
 
         let mut parent = handle_error!(tracker.get(&gvr, &namespace, name));
-        let current = handle_error!(scale::to_scale(&parent, scale));
-        let requested: Value = match method {
+        let current = handle_error!(scale::to_scale(&parent, &scale));
+        let requested = match method {
             "GET" => return Self::success_response(current),
-            "PUT" => serde_json::from_slice(body)?,
+            "PUT" => input,
             _ => {
-                let patch: Value = serde_json::from_slice(body)?;
                 let mut patched = current;
-                Self::apply_patch(
-                    &mut patched,
-                    &patch,
-                    Self::determine_patch_type(content_type),
-                )?;
+                Self::apply_patch(&mut patched, &input, patch_type)?;
                 patched
             }
         };
@@ -683,7 +720,7 @@ impl MockService {
             )));
         }
 
-        scale::set_spec_replicas(&mut parent, scale, replicas);
+        scale::set_spec_replicas(&mut parent, &scale, replicas);
         match requested["metadata"]["resourceVersion"]
             .as_str()
             .filter(|rv| !rv.is_empty())
@@ -697,7 +734,7 @@ impl MockService {
         }
 
         let updated = handle_error!(tracker.update(&gvr, gvk, parent, &namespace, false));
-        Self::success_response(handle_error!(scale::to_scale(&updated, scale)))
+        Self::success_response(handle_error!(scale::to_scale(&updated, &scale)))
     }
 
     async fn handle_get(
