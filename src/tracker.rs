@@ -75,6 +75,18 @@ type ObjectsByName = HashMap<String, StoredObject>;
 type ObjectsByNamespace = HashMap<String, ObjectsByName>;
 type ObjectStorage = HashMap<GVR, ObjectsByNamespace>;
 
+/// Sets `to`'s status to `from`'s, removing it when `from` has none.
+fn copy_status_from(from: &Value, to: &mut Value) {
+    match from.get("status") {
+        Some(status) => to["status"] = status.clone(),
+        None => {
+            if let Some(fields) = to.as_object_mut() {
+                fields.remove("status");
+            }
+        }
+    }
+}
+
 fn namespaces_gvr() -> GVR {
     GVR::new("", "v1", "namespaces")
 }
@@ -108,11 +120,16 @@ impl ObjectTracker {
             .insert(gvk);
     }
 
+    /// Built-in kinds get their status subresource from discovery, as
+    /// controller-runtime's fake client does for in-tree kinds; other kinds
+    /// need `add_status_subresource`.
     pub fn has_status_subresource(&self, gvk: &GVK) -> bool {
-        self.with_status_subresource
-            .read()
-            .expect("lock poisoned")
-            .contains(gvk)
+        Discovery::has_subresource(gvk, "status")
+            || self
+                .with_status_subresource
+                .read()
+                .expect("lock poisoned")
+                .contains(gvk)
     }
 
     /// Validate that namespace usage matches the resource's scope.
@@ -136,14 +153,6 @@ impl ObjectTracker {
                 gvk.group, gvk.version, gvk.kind
             ))),
             _ => Ok(()),
-        }
-    }
-
-    /// Auto-register status subresource if object has a status field
-    fn maybe_register_status_subresource(&self, gvk: &GVK, object: &Value) {
-        if object.get("status").is_some() {
-            self.add_status_subresource(gvk.clone());
-            debug!("Auto-registered status subresource for GVK: {:?}", gvk);
         }
     }
 
@@ -208,8 +217,6 @@ impl ObjectTracker {
 
         self.store_object(gvr, namespace, &name, stored)?;
         debug!("Added object: {}/{}", namespace, name);
-
-        self.maybe_register_status_subresource(gvk, &object);
 
         Ok(object)
     }
@@ -288,8 +295,6 @@ impl ObjectTracker {
         self.store_object(gvr, namespace, &name, stored)?;
         debug!("Created object: {}/{}", namespace, name);
 
-        self.maybe_register_status_subresource(gvk, &object);
-
         Ok(object)
     }
 
@@ -333,18 +338,20 @@ impl ObjectTracker {
             }
         }
 
-        // Handle status subresource logic
+        // Split spec and status as controller-runtime's fake client does
         if self.has_status_subresource(gvk) {
             if is_status {
-                // Status update: preserve spec
-                if let Some(spec) = existing.get("spec") {
-                    object["spec"] = spec.clone();
+                // A status update changes only status. The managed fields an
+                // apply recorded on the request are kept with it; a request
+                // without them keeps the stored ones.
+                let mut stored = existing.clone();
+                copy_status_from(&object, &mut stored);
+                if let Some(managed) = object["metadata"].get("managedFields") {
+                    stored["metadata"]["managedFields"] = managed.clone();
                 }
+                object = stored;
             } else {
-                // Regular update: preserve status
-                if let Some(status) = existing.get("status") {
-                    object["status"] = status.clone();
-                }
+                copy_status_from(&existing, &mut object);
             }
         }
 
