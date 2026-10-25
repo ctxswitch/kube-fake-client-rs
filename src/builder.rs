@@ -5,6 +5,7 @@ use crate::client_utils::extract_gvk;
 use crate::discovery::Discovery;
 use crate::interceptor;
 use crate::registry::ResourceRegistry;
+use crate::scale::ScaleSubresource;
 use crate::tracker::{GVK, GVR};
 #[cfg(feature = "validation")]
 use crate::validator::RuntimeOpenAPIValidator;
@@ -43,6 +44,7 @@ use std::sync::Arc;
 pub struct ClientBuilder {
     initial_objects: Vec<Value>,
     with_status_subresource: Vec<GVK>,
+    with_scale_subresource: Vec<(GVK, ScaleSubresource)>,
     indexes: HashMap<GVK, HashMap<String, IndexerFunc>>,
     return_managed_fields: bool,
     fixture_dir: Option<PathBuf>,
@@ -58,6 +60,7 @@ impl ClientBuilder {
         Self {
             initial_objects: Vec::new(),
             with_status_subresource: Vec::new(),
+            with_scale_subresource: Vec::new(),
             indexes: HashMap::new(),
             return_managed_fields: false,
             fixture_dir: None,
@@ -188,6 +191,64 @@ impl ClientBuilder {
         let gvk = extract_gvk(&dummy_value)
             .expect("Failed to extract GVK from resource - ensure apiVersion and kind are set");
         self.with_status_subresource.push(gvk);
+        self
+    }
+
+    /// Enable the scale subresource for a custom resource type
+    ///
+    /// The paths take the form of the CRD's `subresources.scale` fields:
+    /// `spec_replicas_path` and `status_replicas_path` (such as `.spec.replicas`
+    /// and `.status.replicas`), and an optional `label_selector_path` naming a
+    /// field that holds the selector as a string. Deployment, ReplicaSet,
+    /// StatefulSet and ReplicationController have a scale subresource without
+    /// this call.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either replica path names no field.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use kube_fake_client::ClientBuilder;
+    /// use kube::CustomResource;
+    /// use schemars::JsonSchema;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+    /// #[kube(group = "example.com", version = "v1", kind = "MyApp", plural = "myapps", namespaced)]
+    /// struct MyAppSpec {
+    ///     replicas: i32,
+    /// }
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new()
+    ///     .with_resource::<MyApp>()
+    ///     .with_scale_subresource::<MyApp>(".spec.replicas", ".status.replicas", None)
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_scale_subresource<K>(
+        mut self,
+        spec_replicas_path: &str,
+        status_replicas_path: &str,
+        label_selector_path: Option<&str>,
+    ) -> Self
+    where
+        K: Resource<DynamicType = ()>,
+    {
+        let gvk = GVK::new(K::group(&()), K::version(&()), K::kind(&()));
+        self.with_scale_subresource.push((
+            gvk,
+            ScaleSubresource::custom(
+                spec_replicas_path,
+                status_replicas_path,
+                label_selector_path,
+            ),
+        ));
         self
     }
 
@@ -599,6 +660,9 @@ impl ClientBuilder {
         // Enable status subresources
         for gvk in self.with_status_subresource {
             fake_client.tracker.add_status_subresource(gvk);
+        }
+        for (gvk, scale) in self.with_scale_subresource {
+            fake_client.tracker.add_scale_subresource(gvk, scale);
         }
 
         // Add initial objects (using add() not create() to match Go's behavior)

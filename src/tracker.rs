@@ -95,6 +95,7 @@ fn namespaces_gvr() -> GVR {
 pub struct ObjectTracker {
     objects: Arc<RwLock<ObjectStorage>>,
     with_status_subresource: Arc<RwLock<std::collections::HashSet<GVK>>>,
+    with_scale_subresource: Arc<RwLock<HashMap<GVK, ScaleSubresource>>>,
     resource_version: Arc<AtomicU64>,
     registry: Arc<ResourceRegistry>,
 }
@@ -104,6 +105,7 @@ impl ObjectTracker {
         Self {
             objects: Arc::new(RwLock::new(HashMap::new())),
             with_status_subresource: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            with_scale_subresource: Arc::new(RwLock::new(HashMap::new())),
             resource_version: Arc::new(AtomicU64::new(0)),
             registry,
         }
@@ -133,10 +135,26 @@ impl ObjectTracker {
                 .contains(gvk)
     }
 
-    /// The scale subresource of `gvk`, for the built-in kinds discovery lists
-    /// with one.
+    pub(crate) fn add_scale_subresource(&self, gvk: GVK, scale: ScaleSubresource) {
+        self.with_scale_subresource
+            .write()
+            .expect("lock poisoned")
+            .insert(gvk, scale);
+    }
+
+    /// The scale subresource of `gvk`: one registered with
+    /// `add_scale_subresource`, or that of a built-in kind discovery lists with
+    /// one.
     pub(crate) fn scale_subresource(&self, gvk: &GVK) -> Option<ScaleSubresource> {
-        Discovery::has_subresource(gvk, "scale").then(|| ScaleSubresource::built_in(&gvk.kind))
+        self.with_scale_subresource
+            .read()
+            .expect("lock poisoned")
+            .get(gvk)
+            .cloned()
+            .or_else(|| {
+                Discovery::has_subresource(gvk, "scale")
+                    .then(|| ScaleSubresource::built_in(&gvk.kind))
+            })
     }
 
     /// Validate that namespace usage matches the resource's scope.

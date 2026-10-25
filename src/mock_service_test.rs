@@ -1832,6 +1832,111 @@ mod tests {
         );
     }
 
+    mod widget {
+        use kube::CustomResource;
+        use schemars::JsonSchema;
+        use serde::{Deserialize, Serialize};
+
+        #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        #[kube(
+            group = "example.com",
+            version = "v1",
+            kind = "Widget",
+            plural = "widgets",
+            status = "WidgetStatus",
+            namespaced
+        )]
+        pub struct WidgetSpec {
+            pub replicas: i32,
+        }
+
+        #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+        pub struct WidgetStatus {
+            pub replicas: i32,
+            pub selector: String,
+        }
+
+        pub fn new(name: &str) -> Widget {
+            let mut widget = Widget::new(name, WidgetSpec { replicas: 2 });
+            widget.status = Some(WidgetStatus {
+                replicas: 1,
+                selector: "app=widget".to_string(),
+            });
+            widget
+        }
+    }
+
+    /// A custom resource serves `/scale` through the paths it registers.
+    #[tokio::test]
+    async fn test_custom_resource_scale_round_trip() {
+        use widget::Widget;
+
+        let client = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .with_scale_subresource::<Widget>(
+                ".spec.replicas",
+                ".status.replicas",
+                Some(".status.selector"),
+            )
+            .build()
+            .await
+            .unwrap();
+        let widgets: kube::Api<Widget> = kube::Api::namespaced(client, "default");
+        widgets
+            .create(&PostParams::default(), &widget::new("w"))
+            .await
+            .unwrap();
+
+        let scale = widgets.get_scale("w").await.unwrap();
+        assert_eq!(scale.spec.and_then(|s| s.replicas), Some(2));
+        let status = scale.status.unwrap();
+        assert_eq!(status.replicas, 1);
+        assert_eq!(status.selector.as_deref(), Some("app=widget"));
+
+        widgets
+            .patch_scale(
+                "w",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 4 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(widgets.get("w").await.unwrap().spec.replicas, 4);
+    }
+
+    /// Without a selector path the `Scale` has no selector, and without
+    /// registration a custom resource has no `/scale` path.
+    #[tokio::test]
+    async fn test_custom_resource_scale_registration() {
+        use widget::Widget;
+
+        let client = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .with_scale_subresource::<Widget>(".spec.replicas", ".status.replicas", None)
+            .build()
+            .await
+            .unwrap();
+        let widgets: kube::Api<Widget> = kube::Api::namespaced(client, "default");
+        widgets
+            .create(&PostParams::default(), &widget::new("w"))
+            .await
+            .unwrap();
+        let scale = widgets.get_scale("w").await.unwrap();
+        assert_eq!(scale.status.unwrap().selector, None);
+
+        let client = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .build()
+            .await
+            .unwrap();
+        let widgets: kube::Api<Widget> = kube::Api::namespaced(client, "default");
+        widgets
+            .create(&PostParams::default(), &widget::new("w"))
+            .await
+            .unwrap();
+        assert_subresource_not_found(widgets.get_scale("w").await, "widgets/scale \"w\"");
+    }
+
     /// A kind without a scale subresource has no `/scale` path.
     #[tokio::test]
     async fn test_scale_on_pod_returns_404() {

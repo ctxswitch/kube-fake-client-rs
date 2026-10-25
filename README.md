@@ -161,6 +161,16 @@ deployments
     .await?;
 ```
 
+Register a scale subresource for a custom resource with the paths from its CRD's `subresources.scale`:
+
+```rust
+let client = ClientBuilder::new()
+    .with_resource::<MyApp>()
+    .with_scale_subresource::<MyApp>(".spec.replicas", ".status.replicas", Some(".status.selector"))
+    .build()
+    .await?;
+```
+
 ### YAML fixtures
 
 Load YAML files as test fixtures:

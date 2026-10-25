@@ -20,6 +20,10 @@ enum SelectorSource {
     LabelSelector,
     /// `spec.selector` as a plain label map (ReplicationController)
     Map,
+    /// A selector already serialized as a string at this path (custom resources)
+    Path(Vec<String>),
+    /// No selector (a custom resource without `labelSelectorPath`)
+    None,
 }
 
 impl ScaleSubresource {
@@ -36,6 +40,37 @@ impl ScaleSubresource {
             selector,
         }
     }
+
+    /// The scale subresource of a custom resource, with paths in the form of
+    /// CRD `subresources.scale` (`.spec.replicas`).
+    pub(crate) fn custom(
+        spec_replicas_path: &str,
+        status_replicas_path: &str,
+        label_selector_path: Option<&str>,
+    ) -> Self {
+        let spec_replicas = parse_path(spec_replicas_path);
+        let status_replicas = parse_path(status_replicas_path);
+        assert!(
+            !spec_replicas.is_empty() && !status_replicas.is_empty(),
+            "scale replica paths must name a field, such as .spec.replicas"
+        );
+        Self {
+            spec_replicas,
+            status_replicas,
+            selector: label_selector_path.map_or(SelectorSource::None, |path| {
+                SelectorSource::Path(parse_path(path))
+            }),
+        }
+    }
+}
+
+/// Splits a dotted JSON path (`.spec.replicas`) into its fields. CRD scale
+/// paths have no array notation.
+fn parse_path(path: &str) -> Vec<String> {
+    path.split('.')
+        .filter(|field| !field.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Builds the `Scale` for `parent`. Missing replica counts read as 0, and
@@ -55,9 +90,14 @@ pub(crate) fn to_scale(parent: &Value, scale: &ScaleSubresource) -> Result<Value
         }
     }
 
-    let selector = match scale.selector {
+    let selector = match &scale.selector {
         SelectorSource::LabelSelector => selector_string(&parent["spec"]["selector"])?,
         SelectorSource::Map => map_selector_string(&parent["spec"]["selector"]),
+        SelectorSource::Path(path) => value_at(parent, path)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        SelectorSource::None => String::new(),
     };
 
     let mut spec = Map::new();
@@ -96,11 +136,12 @@ pub(crate) fn set_spec_replicas(parent: &mut Value, scale: &ScaleSubresource, re
     target[last.as_str()] = json!(replicas);
 }
 
+fn value_at<'a>(object: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(object, |value, key| value.get(key))
+}
+
 fn replicas_at(object: &Value, path: &[String]) -> i64 {
-    path.iter()
-        .try_fold(object, |value, key| value.get(key))
-        .and_then(Value::as_i64)
-        .unwrap_or(0)
+    value_at(object, path).and_then(Value::as_i64).unwrap_or(0)
 }
 
 /// Formats a `LabelSelector` as `labels.Selector.String()` does: requirements
