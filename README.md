@@ -15,6 +15,7 @@
 - **`kube::Api<K>` operations:** Create, get, list, update, patch, and delete resources through the usual API.
 - **Status subresources:** Configure separate spec and status updates for resource types that use them.
 - **Resource versions:** Assign versions automatically and return conflicts for stale writes.
+- **Finalizers:** Deleting an object with finalizers sets `deletionTimestamp` and keeps it until an update removes the last finalizer. Owner-reference cascade follows the same rule for each dependent.
 - **Namespace scope:** Keep namespaced resources isolated while also supporting cluster-scoped resources.
 - **Selectors and indexes:** Filter with Kubernetes label and field selector syntax, including custom indexes.
 - **Custom resources:** Register custom resource types and use them through `Api<K>`.

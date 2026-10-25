@@ -899,4 +899,130 @@ mod tests {
         // The cross-namespace pod should survive
         assert!(tracker.get(&pod_gvr, "ns-b", "cross-ns-pod").is_ok());
     }
+
+    // ============================================================================
+    // Finalizer Tests
+    // ============================================================================
+
+    #[test]
+    fn test_delete_with_finalizers_marks_object() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let mut obj = create_test_object("test-pod", "default");
+        obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
+        tracker.create(&gvr, &gvk, obj, "default").unwrap();
+
+        let deleted = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        assert!(deleted["metadata"]["deletionTimestamp"].is_string());
+        assert_eq!(deleted["metadata"]["deletionGracePeriodSeconds"], 0);
+        assert_eq!(deleted["metadata"]["generation"], 2);
+
+        let retrieved = tracker.get(&gvr, "default", "test-pod").unwrap();
+        assert_eq!(retrieved, deleted);
+    }
+
+    #[test]
+    fn test_delete_terminating_object_is_noop() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let mut obj = create_test_object("test-pod", "default");
+        obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
+        tracker.create(&gvr, &gvk, obj, "default").unwrap();
+
+        let first = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        let second = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn test_update_removing_last_finalizer_deletes_object() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let mut obj = create_test_object("test-pod", "default");
+        obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
+        tracker.create(&gvr, &gvk, obj, "default").unwrap();
+
+        let mut terminating = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        terminating["metadata"]["finalizers"] = json!([]);
+        let updated = tracker
+            .update(&gvr, &gvk, terminating, "default", false)
+            .unwrap();
+
+        assert_eq!(updated["metadata"]["finalizers"], json!([]));
+        assert!(tracker.get(&gvr, "default", "test-pod").is_err());
+    }
+
+    #[test]
+    fn test_delete_cascade_marks_dependent_with_finalizers() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let ns = "default";
+
+        let owner = tracker
+            .create(&gvr, &gvk, create_test_object("owner", ns), ns)
+            .unwrap();
+
+        let mut dependent = create_test_object("dependent", ns);
+        dependent["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
+        dependent["metadata"]["ownerReferences"] = json!([{
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "name": "owner",
+            "uid": owner["metadata"]["uid"]
+        }]);
+        let dependent = tracker.create(&gvr, &gvk, dependent, ns).unwrap();
+
+        let mut grandchild = create_test_object("grandchild", ns);
+        grandchild["metadata"]["ownerReferences"] = json!([{
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "name": "dependent",
+            "uid": dependent["metadata"]["uid"]
+        }]);
+        tracker.create(&gvr, &gvk, grandchild, ns).unwrap();
+
+        tracker.delete(&gvr, ns, "owner", true).unwrap();
+
+        // The dependent is terminating and its own dependent waits for it
+        assert!(tracker.get(&gvr, ns, "owner").is_err());
+        let mut terminating = tracker.get(&gvr, ns, "dependent").unwrap();
+        assert!(terminating["metadata"]["deletionTimestamp"].is_string());
+        assert!(tracker.get(&gvr, ns, "grandchild").is_ok());
+
+        // Removing the dependent's finalizer removes it and cascades
+        terminating["metadata"]["finalizers"] = json!([]);
+        tracker.update(&gvr, &gvk, terminating, ns, false).unwrap();
+        assert!(tracker.get(&gvr, ns, "dependent").is_err());
+        assert!(tracker.get(&gvr, ns, "grandchild").is_err());
+    }
+
+    #[test]
+    fn test_update_rejects_new_finalizer_while_terminating() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("", "v1", "pods");
+        let gvk = GVK::new("", "v1", "Pod");
+        let mut obj = create_test_object("test-pod", "default");
+        obj["metadata"]["finalizers"] = json!(["a", "b"]);
+        tracker.create(&gvr, &gvk, obj, "default").unwrap();
+        let terminating = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+
+        let mut added = terminating.clone();
+        added["metadata"]["finalizers"] = json!(["a", "c"]);
+        let result = tracker.update(&gvr, &gvk, added, "default", false);
+        assert!(matches!(result, Err(crate::Error::InvalidRequest(_))));
+        if let Err(crate::Error::InvalidRequest(msg)) = result {
+            assert!(msg.contains(r#"found new finalizers []string{"c"}"#));
+        }
+
+        let mut removed = terminating;
+        removed["metadata"]["finalizers"] = json!(["a"]);
+        tracker
+            .update(&gvr, &gvk, removed, "default", false)
+            .unwrap();
+        assert!(tracker.get(&gvr, "default", "test-pod").is_ok());
+    }
 }
