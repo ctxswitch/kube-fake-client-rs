@@ -720,6 +720,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_interceptor_scale_subresources() {
+        use crate::interceptor;
+        use k8s_openapi::api::apps::v1::Deployment;
+        use kube::api::{Patch, PatchParams, PostParams};
+        use serde_json::json;
+
+        let client = ClientBuilder::new()
+            .with_interceptor_funcs(
+                interceptor::Funcs::new()
+                    .get_scale(|_| Err(crate::Error::Conflict("injected scale error".into())))
+                    .patch_scale(|_| Ok(None)),
+            )
+            .build()
+            .await
+            .unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
+        let deployment: Deployment = serde_json::from_value(json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": "web" },
+            "spec": { "replicas": 1, "selector": { "matchLabels": { "app": "web" } } }
+        }))
+        .unwrap();
+        deployments
+            .create(&PostParams::default(), &deployment)
+            .await
+            .unwrap();
+
+        match deployments.get_scale("web").await {
+            Err(kube::Error::Api(err)) => {
+                assert_eq!(err.code, 409);
+                assert_eq!(err.message, "injected scale error");
+            }
+            other => panic!("expected injected 409, got {other:?}"),
+        }
+
+        // An interceptor returning None falls through to the default behavior
+        let patched = deployments
+            .patch_scale(
+                "web",
+                &PatchParams::default(),
+                &Patch::Merge(json!({ "spec": { "replicas": 3 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(patched.spec.and_then(|s| s.replicas), Some(3));
+    }
+
+    #[tokio::test]
     async fn test_interceptor_status_subresources() {
         use crate::interceptor;
         use serde_json::json;

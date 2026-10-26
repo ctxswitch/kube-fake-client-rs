@@ -8,7 +8,8 @@ use crate::field_selectors::extract_preregistered_field_value;
 use crate::interceptor;
 use crate::label_selector;
 use crate::managed_fields::apply_field_ownership;
-use crate::tracker::GVR;
+use crate::scale;
+use crate::tracker::{GVK, GVR};
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt};
 use http::{Request, Response, StatusCode};
@@ -156,10 +157,10 @@ impl MockService {
         }
     }
 
-    /// Whether the fake handles `method` on `subresource`. Only `status` with GET, PUT or PATCH is
-    /// handled.
+    /// Whether the fake handles `method` on `subresource`. Only `status` and `scale` with GET, PUT
+    /// or PATCH are handled.
     fn is_implemented_subresource(method: &str, subresource: &str) -> bool {
-        subresource == "status" && matches!(method, "GET" | "PUT" | "PATCH")
+        matches!(subresource, "status" | "scale") && matches!(method, "GET" | "PUT" | "PATCH")
     }
 
     /// Convert resource plural to Kind using discovery + registry
@@ -558,20 +559,39 @@ impl MockService {
             return Self::path_not_found_response();
         };
         if let Some(sub) = parsed.subresource.as_deref() {
-            if sub != "status" {
+            if !matches!(sub, "status" | "scale") {
                 return Self::subresource_not_found_response(&parsed, sub);
             }
-            // A kind without a status subresource has no `/status` path. An
-            // unknown kind falls through to the handlers' own error.
+            // A kind without the subresource has no path for it, and a kind with
+            // it answers other methods with 405. An unknown kind has no path at
+            // all: other methods get 404, and implemented ones fall through to the
+            // handlers' own error.
+            let implemented = Self::is_implemented_subresource(method.as_str(), sub);
             let group = parsed.group.clone().unwrap_or_default();
-            if let Ok(kind) = self.resource_to_kind(&group, &parsed.version, &parsed.resource) {
-                let gvk = crate::tracker::GVK::new(group, parsed.version.clone(), kind);
-                if !self.client.tracker().has_status_subresource(&gvk) {
+            match self.resource_to_kind(&group, &parsed.version, &parsed.resource) {
+                Ok(kind) => {
+                    let gvk = GVK::new(group, parsed.version.clone(), kind);
+                    if sub == "scale" {
+                        return self.handle_scale(
+                            method.as_str(),
+                            &parsed,
+                            &gvk,
+                            &body_bytes,
+                            content_type.as_deref(),
+                            query.as_deref(),
+                        );
+                    }
+                    if !self.client.tracker().has_status_subresource(&gvk) {
+                        return Self::subresource_not_found_response(&parsed, sub);
+                    }
+                    if !implemented {
+                        return Self::method_not_allowed_response();
+                    }
+                }
+                Err(_) if !implemented => {
                     return Self::subresource_not_found_response(&parsed, sub);
                 }
-            }
-            if !Self::is_implemented_subresource(method.as_str(), sub) {
-                return Self::status_method_not_allowed_response();
+                Err(_) => {}
             }
         }
 
@@ -595,6 +615,126 @@ impl MockService {
             }
             _ => Self::error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
         }
+    }
+
+    /// GET, PUT and PATCH on `…/{name}/scale`, as kube-apiserver's scale storage
+    /// serves them: the `Scale` is built from the parent, a PATCH applies to
+    /// that `Scale`, and a write changes only the parent's replica count. The
+    /// `Scale`'s `resourceVersion` is the parent's optimistic lock. A kind
+    /// without a scale subresource returns 404, and other methods return 405.
+    fn handle_scale(
+        &self,
+        method: &str,
+        parsed: &ParsedPath,
+        gvk: &GVK,
+        body: &Bytes,
+        content_type: Option<&str>,
+        query: Option<&str>,
+    ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
+        let tracker = self.client.tracker();
+        let Some(scale) = tracker.scale_subresource(gvk) else {
+            return Self::subresource_not_found_response(parsed, "scale");
+        };
+        if !Self::is_implemented_subresource(method, "scale") {
+            return Self::method_not_allowed_response();
+        }
+        let namespace = Self::extract_namespace(parsed);
+        let name = parsed.name.as_deref().ok_or("Name required for scale")?;
+        let gvr = GVR::new(&gvk.group, &gvk.version, &parsed.resource);
+        let input: Value = if method == "GET" {
+            Value::Null
+        } else {
+            serde_json::from_slice(body)?
+        };
+        let patch_type = Self::determine_patch_type(content_type);
+
+        if let Some(ref interceptors) = self.client.interceptors {
+            let intercepted = match method {
+                "GET" => interceptors.get_scale.as_ref().map(|get_scale| {
+                    get_scale(interceptor::GetScaleContext {
+                        client: &self.client,
+                        namespace: &namespace,
+                        name,
+                    })
+                }),
+                "PUT" => interceptors.replace_scale.as_ref().map(|replace_scale| {
+                    replace_scale(interceptor::ReplaceScaleContext {
+                        client: &self.client,
+                        object: &input,
+                        namespace: &namespace,
+                        name,
+                        params: &PostParams::default(),
+                    })
+                }),
+                _ => interceptors.patch_scale.as_ref().map(|patch_scale| {
+                    patch_scale(interceptor::PatchScaleContext {
+                        client: &self.client,
+                        patch: &input,
+                        namespace: &namespace,
+                        name,
+                        params: &Self::parse_patch_params(query),
+                        patch_type,
+                    })
+                }),
+            };
+            match intercepted {
+                Some(Ok(Some(result))) => return Self::success_response(result),
+                Some(Err(e)) => return Self::error_to_response(e),
+                Some(Ok(None)) | None => {}
+            }
+        }
+
+        let mut parent = handle_error!(tracker.get(&gvr, &namespace, name));
+        let current = handle_error!(scale::to_scale(&parent, &scale));
+        let requested = match method {
+            "GET" => return Self::success_response(current),
+            "PUT" => input,
+            _ => {
+                let mut patched = current;
+                Self::apply_patch(&mut patched, &input, patch_type)?;
+                patched
+            }
+        };
+
+        let replicas = requested["spec"]["replicas"].as_i64().unwrap_or(0);
+        if replicas < 0 {
+            return Self::error_to_response(Error::InvalidRequest(format!(
+                "Scale.autoscaling \"{name}\" is invalid: spec.replicas: Invalid value: {replicas}: must be greater than or equal to 0"
+            )));
+        }
+        let parent_uid = parent["metadata"]["uid"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if let Some(uid) = requested["metadata"]["uid"]
+            .as_str()
+            .filter(|uid| !uid.is_empty() && *uid != parent_uid)
+        {
+            let resource = if gvk.group.is_empty() {
+                format!("{}/scale", gvr.resource)
+            } else {
+                format!("{}/scale.{}", gvr.resource, gvk.group)
+            };
+            return Self::error_to_response(Error::Conflict(format!(
+                "Operation cannot be fulfilled on {resource} \"{name}\": Precondition failed: UID in precondition: {uid}, UID in object meta: {parent_uid}"
+            )));
+        }
+
+        scale::set_spec_replicas(&mut parent, &scale, replicas);
+        match requested["metadata"]["resourceVersion"]
+            .as_str()
+            .filter(|rv| !rv.is_empty())
+        {
+            Some(rv) => parent["metadata"]["resourceVersion"] = Value::from(rv),
+            None => {
+                if let Some(metadata) = parent["metadata"].as_object_mut() {
+                    metadata.remove("resourceVersion");
+                }
+            }
+        }
+
+        let updated = handle_error!(tracker.update(&gvr, gvk, parent, &namespace, false));
+        Self::success_response(handle_error!(scale::to_scale(&updated, &scale)))
     }
 
     async fn handle_get(
@@ -1202,8 +1342,8 @@ impl MockService {
             .expect("Failed to build response"))
     }
 
-    /// 405 `Status` for an unsupported method on the `status` subresource.
-    fn status_method_not_allowed_response(
+    /// 405 `Status` for an unsupported method on a subresource the kind has.
+    fn method_not_allowed_response(
     ) -> std::result::Result<Response<Full<Bytes>>, Box<dyn std::error::Error + Send + Sync>> {
         let body = serde_json::json!({
             "kind": "Status",
