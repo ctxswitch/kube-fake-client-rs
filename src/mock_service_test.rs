@@ -3071,6 +3071,66 @@ mod tests {
         );
     }
 
+    /// Sends a bodyless `method` request to `path`.
+    async fn request_without_body(
+        client: &kube::Client,
+        method: &str,
+        path: &str,
+    ) -> Result<String, kube::Error> {
+        let req = http::Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Vec::new())
+            .unwrap();
+        client.request_text(req).await
+    }
+
+    /// POST and DELETE on `/scale` return 405 for a kind with a scale subresource
+    /// and leave the parent unchanged, and 404 for a kind without one.
+    #[tokio::test]
+    async fn test_unsupported_methods_on_scale() {
+        use k8s_openapi::api::apps::v1::Deployment;
+
+        let (client, _pods, _created) = client_with_pod_p().await;
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client.clone(), "default");
+        let created = deployments
+            .create(&PostParams::default(), &web_deployment())
+            .await
+            .unwrap();
+
+        for method in ["POST", "DELETE"] {
+            let path = "/apis/apps/v1/namespaces/default/deployments/web/scale";
+            assert_subresource_method_not_allowed(
+                request_without_body(&client, method, path).await,
+            );
+            let path = "/api/v1/namespaces/default/pods/p/scale";
+            assert_subresource_not_found(
+                request_without_body(&client, method, path).await,
+                "pods/scale \"p\"",
+            );
+        }
+        assert_eq!(deployments.get("web").await.unwrap(), created);
+    }
+
+    /// A resource the fake does not know has no subresource paths, so every
+    /// method on its `/status` or `/scale` returns 404.
+    #[tokio::test]
+    async fn test_subresources_of_unknown_resource_return_404() {
+        let client = ClientBuilder::new().build().await.unwrap();
+
+        for sub in ["status", "scale"] {
+            let path = format!("/apis/example.com/v1/namespaces/default/widgets/w/{sub}");
+            for method in ["GET", "POST", "DELETE"] {
+                match request_without_body(&client, method, &path).await {
+                    Err(kube::Error::Api(err)) => {
+                        assert_eq!(err.code, 404, "{method} {path}: {err:?}")
+                    }
+                    other => panic!("{method} {path}: expected 404, got {other:?}"),
+                }
+            }
+        }
+    }
+
     /// Unimplemented subresources on cluster-scoped resources return 404.
     #[tokio::test]
     async fn test_cluster_scoped_unimplemented_subresource_returns_404() {
