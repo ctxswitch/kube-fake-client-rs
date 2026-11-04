@@ -65,3 +65,4 @@ pub use builder::ClientBuilder;
 pub use error::{Error, Result};
 pub use kube::Client;
 pub use mock_service::PatchType;
+pub use tracker::DeletePropagation;

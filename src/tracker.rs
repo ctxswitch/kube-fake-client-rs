@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 
+const ORPHAN_FINALIZER: &str = "orphan";
+const FOREGROUND_FINALIZER: &str = "foregroundDeletion";
+
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GVR {
@@ -65,6 +68,17 @@ impl GVK {
     }
 }
 
+/// What a delete request asks for the object's dependents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeletePropagation {
+    /// Neither `propagationPolicy` nor `orphanDependents` is set.
+    Unspecified,
+    /// `propagationPolicy: Orphan` or `orphanDependents: true`.
+    Orphan,
+    /// `propagationPolicy: Background` or `Foreground`, or `orphanDependents: false`.
+    Cascade,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredObject {
     pub data: Value,
@@ -90,6 +104,32 @@ fn copy_status_from(from: &Value, to: &mut Value) {
 
 fn namespaces_gvr() -> GVR {
     GVR::new("", "v1", "namespaces")
+}
+
+fn has_orphan_finalizer(meta: &ObjectMeta) -> bool {
+    meta.finalizers
+        .iter()
+        .flatten()
+        .any(|finalizer| finalizer == ORPHAN_FINALIZER)
+}
+
+/// Whether a delete orphans the dependents of the object with `meta`, decided
+/// in the order of kube-apiserver's `shouldOrphanDependents`.
+fn should_orphan(propagation: DeletePropagation, meta: &ObjectMeta) -> bool {
+    match propagation {
+        DeletePropagation::Orphan => true,
+        DeletePropagation::Cascade => false,
+        DeletePropagation::Unspecified => meta
+            .finalizers
+            .iter()
+            .flatten()
+            .find_map(|finalizer| match finalizer.as_str() {
+                ORPHAN_FINALIZER => Some(true),
+                FOREGROUND_FINALIZER => Some(false),
+                _ => None,
+            })
+            .unwrap_or(false),
+    }
 }
 
 pub struct ObjectTracker {
@@ -429,7 +469,7 @@ impl ObjectTracker {
         if should_be_deleted(&new_meta) {
             let mut objects = self.objects.write().expect("lock poisoned");
             if !(*gvr == namespaces_gvr() && Self::namespace_has_content_locked(&objects, &name)) {
-                self.remove_locked(&mut objects, gvr, namespace, &name, true)?;
+                self.remove_locked(&mut objects, gvr, namespace, &name)?;
                 return Ok(object);
             }
         }
@@ -451,26 +491,27 @@ impl ObjectTracker {
         Ok(object)
     }
 
-    /// Deletes `name` and optionally cascades to all objects that transitively
-    /// reference it via `ownerReferences`.
+    /// Deletes `name`, playing both kube-apiserver and the garbage collector.
+    ///
+    /// When the delete orphans (see [`should_orphan`]), the `orphan` finalizer
+    /// is added for the response, and [`Self::finish_orphaning_locked`] clears
+    /// it again before returning, without waiting for other finalizers.
     ///
     /// An object with finalizers is not removed. It is marked as terminating
-    /// (see [`Self::mark_for_deletion`]) and returned, and its dependents stay
-    /// until an update removes its last finalizer.
+    /// (see [`Self::mark_for_deletion`]) and returned, and any dependents it
+    /// still has stay until an update removes its last finalizer.
     ///
-    /// Otherwise the object is removed. When `cascade` is `true`, an iterative
-    /// worklist under a single write lock collects its UID, scans for dependents
-    /// respecting Kubernetes scope rules (cluster-scoped owners scan all
-    /// namespaces, namespaced owners scan only their own namespace), removes
-    /// them, collects their UIDs, and repeats until no more dependents are found.
-    /// A visited set prevents cycles. A dependent with finalizers is marked
-    /// instead of removed, and its own dependents are left in place.
-    ///
-    /// When `cascade` is `false`, only the target object is removed — no
-    /// dependent scanning or deletion is performed.
+    /// Otherwise the object is removed with its dependents (see
+    /// [`Self::remove_locked`]).
     ///
     /// A Namespace follows [`Self::delete_namespace_locked`] instead.
-    pub fn delete(&self, gvr: &GVR, namespace: &str, name: &str, cascade: bool) -> Result<Value> {
+    pub fn delete(
+        &self,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+        propagation: DeletePropagation,
+    ) -> Result<Value> {
         trace!("Deleting object: {:?} {}/{}", gvr, namespace, name);
 
         let mut objects = self.objects.write().expect("lock poisoned");
@@ -478,18 +519,20 @@ impl ObjectTracker {
         if *gvr == namespaces_gvr() {
             return self.delete_namespace_locked(&mut objects, name);
         }
-        self.delete_locked(&mut objects, gvr, namespace, name, cascade)
+        self.delete_locked(&mut objects, gvr, namespace, name, propagation)
     }
 
-    /// Deletes one object under the caller's write lock: marks it when it has
-    /// finalizers, and otherwise removes it.
+    /// Deletes one object under the caller's write lock: sets the `orphan`
+    /// finalizer as `propagation` decides, then marks the object when it has
+    /// finalizers and removes it otherwise. The response keeps `orphan`, as
+    /// kube-apiserver's does, because the garbage collector clears it later.
     fn delete_locked(
         &self,
         objects: &mut ObjectStorage,
         gvr: &GVR,
         namespace: &str,
         name: &str,
-        cascade: bool,
+        propagation: DeletePropagation,
     ) -> Result<Value> {
         let stored = objects
             .get_mut(gvr)
@@ -497,18 +540,111 @@ impl ObjectTracker {
             .and_then(|ns_objects| ns_objects.get_mut(name))
             .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
+        let orphan = should_orphan(propagation, &stored.metadata);
+        self.set_orphan_finalizer(stored, orphan)?;
+
         if stored
             .metadata
             .finalizers
             .as_ref()
-            .is_some_and(|f| !f.is_empty())
+            .is_none_or(Vec::is_empty)
         {
-            self.mark_for_deletion(stored)?;
-            debug!("Marked object for deletion: {}/{}", namespace, name);
-            return Ok(stored.data.clone());
+            return self.remove_locked(objects, gvr, namespace, name);
         }
 
-        self.remove_locked(objects, gvr, namespace, name, cascade)
+        self.mark_for_deletion(stored)?;
+        debug!("Marked object for deletion: {}/{}", namespace, name);
+        let marked = stored.data.clone();
+        if orphan {
+            self.finish_orphaning_locked(objects, gvr, namespace, name)?;
+        }
+        Ok(marked)
+    }
+
+    /// Does the garbage collector's orphaning for a terminating object: removes
+    /// it from its dependents' `ownerReferences`, then removes the `orphan`
+    /// finalizer, and removes the object if that was the last finalizer.
+    fn finish_orphaning_locked(
+        &self,
+        objects: &mut ObjectStorage,
+        gvr: &GVR,
+        namespace: &str,
+        name: &str,
+    ) -> Result<()> {
+        let uid = objects
+            .get(gvr)
+            .and_then(|gvr_objects| gvr_objects.get(namespace))
+            .and_then(|ns_objects| ns_objects.get(name))
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?
+            .metadata
+            .uid
+            .clone();
+
+        if let Some(uid) = uid {
+            for (dep_gvr, dep_ns, dep_name) in
+                Self::find_dependents_locked(objects, &uid, namespace)
+            {
+                let dependent = objects
+                    .get_mut(&dep_gvr)
+                    .and_then(|g| g.get_mut(&dep_ns))
+                    .and_then(|n| n.get_mut(&dep_name))
+                    .ok_or_else(|| dep_gvr.not_found_error(&dep_ns, &dep_name))?;
+                self.remove_owner_reference(dependent, &uid)?;
+                debug!("Orphaned dependent: {}/{}", dep_ns, dep_name);
+            }
+        }
+
+        // Fetched after the loop: an object can be its own dependent.
+        let stored = objects
+            .get_mut(gvr)
+            .and_then(|gvr_objects| gvr_objects.get_mut(namespace))
+            .and_then(|ns_objects| ns_objects.get_mut(name))
+            .ok_or_else(|| gvr.not_found_error(namespace, name))?;
+        self.set_orphan_finalizer(stored, false)?;
+
+        if should_be_deleted(&stored.metadata) {
+            self.remove_locked(objects, gvr, namespace, name)?;
+        }
+        Ok(())
+    }
+
+    /// Adds or removes the `orphan` finalizer. An `orphan` that is already
+    /// present keeps its position.
+    fn set_orphan_finalizer(&self, stored: &mut StoredObject, present: bool) -> Result<()> {
+        if has_orphan_finalizer(&stored.metadata) == present {
+            return Ok(());
+        }
+
+        let finalizers = stored.metadata.finalizers.get_or_insert_default();
+        if present {
+            finalizers.push(ORPHAN_FINALIZER.to_string());
+        } else {
+            finalizers.retain(|finalizer| finalizer != ORPHAN_FINALIZER);
+        }
+        if finalizers.is_empty() {
+            stored.metadata.finalizers = None;
+        }
+        self.commit_metadata(stored)
+    }
+
+    fn remove_owner_reference(&self, stored: &mut StoredObject, owner_uid: &str) -> Result<()> {
+        let remaining: Vec<_> = stored
+            .metadata
+            .owner_references
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|reference| reference.uid != owner_uid)
+            .collect();
+        stored.metadata.owner_references = (!remaining.is_empty()).then_some(remaining);
+        self.commit_metadata(stored)
+    }
+
+    /// Publishes a change to `stored.metadata`: `get` and `list` read `data`.
+    fn commit_metadata(&self, stored: &mut StoredObject) -> Result<()> {
+        stored.metadata.resource_version = Some(self.next_resource_version());
+        stored.data["metadata"] = serde_json::to_value(&stored.metadata)?;
+        Ok(())
     }
 
     /// Deletes Namespace `name` the way kube-apiserver and the namespace
@@ -547,7 +683,13 @@ impl ObjectTracker {
                     .and_then(|namespaces| namespaces.get(name))
                     .is_some_and(|objs| objs.contains_key(&obj_name));
                 if present {
-                    self.delete_locked(objects, &obj_gvr, name, &obj_name, true)?;
+                    self.delete_locked(
+                        objects,
+                        &obj_gvr,
+                        name,
+                        &obj_name,
+                        DeletePropagation::Cascade,
+                    )?;
                 }
             }
 
@@ -566,7 +708,7 @@ impl ObjectTracker {
                 .map(|stored| stored.data.clone())
                 .ok_or_else(|| gvr.not_found_error("", name));
         }
-        self.delete_locked(objects, &gvr, "", name, true)
+        self.delete_locked(objects, &gvr, "", name, DeletePropagation::Unspecified)
     }
 
     fn namespace_has_content_locked(objects: &ObjectStorage, namespace: &str) -> bool {
@@ -591,7 +733,7 @@ impl ObjectTracker {
             .and_then(|ns_objects| ns_objects.get(name))
             .is_some_and(|stored| should_be_deleted(&stored.metadata));
         if finalized && !Self::namespace_has_content_locked(objects, name) {
-            self.remove_locked(objects, &gvr, "", name, true)?;
+            self.remove_locked(objects, &gvr, "", name)?;
             debug!("Removed finalized namespace: {}", name);
         }
         Ok(())
@@ -621,22 +763,28 @@ impl ObjectTracker {
         }
 
         if changed {
-            meta.resource_version = Some(self.next_resource_version());
-            stored.data["metadata"] = serde_json::to_value(&stored.metadata)?;
+            self.commit_metadata(stored)?;
         }
         Ok(())
     }
 
-    /// Removes `name` from `objects` and, when `cascade` is `true`, its
-    /// dependents. A terminating Namespace emptied by the removal is removed
-    /// too. The caller holds the write lock.
+    /// Removes `name` from `objects` and its dependents, under the caller's
+    /// write lock. A terminating Namespace emptied by the removal is removed
+    /// too.
+    ///
+    /// An iterative worklist collects the object's UID, scans for dependents
+    /// respecting Kubernetes scope rules (cluster-scoped owners scan all
+    /// namespaces, namespaced owners scan only their own namespace), removes
+    /// them, collects their UIDs, and repeats until no more dependents are
+    /// found. A visited set prevents cycles. A dependent with finalizers is
+    /// marked instead of removed, and its own dependents stay until it goes,
+    /// unless it carries `orphan`, which orphans them now.
     fn remove_locked(
         &self,
         objects: &mut ObjectStorage,
         gvr: &GVR,
         namespace: &str,
         name: &str,
-        cascade: bool,
     ) -> Result<Value> {
         let stored = objects
             .get_mut(gvr)
@@ -646,11 +794,6 @@ impl ObjectTracker {
 
         debug!("Deleted object: {}/{}", namespace, name);
         let data = stored.data;
-
-        if !cascade {
-            self.remove_namespace_if_finalized_locked(objects, namespace)?;
-            return Ok(data);
-        }
 
         let mut touched_namespaces = BTreeSet::from([namespace.to_string()]);
         let mut visited = HashSet::new();
@@ -693,6 +836,9 @@ impl ObjectTracker {
                             "Cascade-marked dependent for deletion: {}/{}",
                             dep_ns, dep_name
                         );
+                        if has_orphan_finalizer(&dep_stored.metadata) {
+                            self.finish_orphaning_locked(objects, &dep_gvr, &dep_ns, &dep_name)?;
+                        }
                     }
                     continue;
                 }

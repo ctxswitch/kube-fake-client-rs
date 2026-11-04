@@ -168,7 +168,9 @@ mod tests {
         let obj = create_test_object("test-pod", "default");
 
         tracker.create(&gvr, &gvk, obj, "default").unwrap();
-        tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        tracker
+            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .unwrap();
 
         assert!(tracker.get(&gvr, "default", "test-pod").is_err());
     }
@@ -554,7 +556,9 @@ mod tests {
         }
 
         // Delete the owner
-        tracker.delete(&gvr, ns, "owner-pod", true).unwrap();
+        tracker
+            .delete(&gvr, ns, "owner-pod", DeletePropagation::Unspecified)
+            .unwrap();
 
         // All three should be gone
         assert!(tracker.get(&gvr, ns, "owner-pod").is_err());
@@ -596,7 +600,9 @@ mod tests {
         tracker.create(&gvr, &gvk, child, ns).unwrap();
 
         // Delete grandparent
-        tracker.delete(&gvr, ns, "grandparent", true).unwrap();
+        tracker
+            .delete(&gvr, ns, "grandparent", DeletePropagation::Unspecified)
+            .unwrap();
 
         // All three should be gone
         assert!(tracker.get(&gvr, ns, "grandparent").is_err());
@@ -631,7 +637,9 @@ mod tests {
         tracker.create(&gvr, &gvk, unrelated, ns).unwrap();
 
         // Delete owner
-        tracker.delete(&gvr, ns, "owner", true).unwrap();
+        tracker
+            .delete(&gvr, ns, "owner", DeletePropagation::Unspecified)
+            .unwrap();
 
         // Owner and child should be gone
         assert!(tracker.get(&gvr, ns, "owner").is_err());
@@ -673,7 +681,9 @@ mod tests {
         tracker.create(&pod_gvr, &pod_gvk, pod_obj, ns).unwrap();
 
         // Delete the deployment
-        tracker.delete(&deploy_gvr, ns, "my-deploy", true).unwrap();
+        tracker
+            .delete(&deploy_gvr, ns, "my-deploy", DeletePropagation::Unspecified)
+            .unwrap();
 
         // Both should be gone
         assert!(tracker.get(&deploy_gvr, ns, "my-deploy").is_err());
@@ -825,7 +835,9 @@ mod tests {
         tracker.add(&ns_gvr, &ns_gvk, dependent, "").unwrap();
 
         // Delete owner — should cascade to child
-        tracker.delete(&ns_gvr, "", "owner-ns", true).unwrap();
+        tracker
+            .delete(&ns_gvr, "", "owner-ns", DeletePropagation::Unspecified)
+            .unwrap();
         assert!(tracker.get(&ns_gvr, "", "owner-ns").is_err());
         assert!(tracker.get(&ns_gvr, "", "child-ns").is_err());
     }
@@ -864,7 +876,9 @@ mod tests {
         tracker.add(&pod_gvr, &pod_gvk, pod, "my-ns").unwrap();
 
         // Delete owner namespace — should cascade to the pod
-        tracker.delete(&ns_gvr, "", "my-ns", true).unwrap();
+        tracker
+            .delete(&ns_gvr, "", "my-ns", DeletePropagation::Unspecified)
+            .unwrap();
         assert!(tracker.get(&ns_gvr, "", "my-ns").is_err());
         assert!(tracker.get(&pod_gvr, "my-ns", "my-pod").is_err());
     }
@@ -907,7 +921,12 @@ mod tests {
 
         // Delete the pod — should NOT cascade to the cluster-scoped namespace
         tracker
-            .delete(&pod_gvr, "default", "owner-pod", true)
+            .delete(
+                &pod_gvr,
+                "default",
+                "owner-pod",
+                DeletePropagation::Unspecified,
+            )
             .unwrap();
         assert!(tracker.get(&pod_gvr, "default", "owner-pod").is_err());
         // The namespace should survive — namespaced owner can't cascade to cluster-scoped
@@ -949,7 +968,14 @@ mod tests {
             .unwrap();
 
         // Delete the owner — should NOT cascade to different-namespace dependent
-        tracker.delete(&pod_gvr, "ns-a", "owner-pod", true).unwrap();
+        tracker
+            .delete(
+                &pod_gvr,
+                "ns-a",
+                "owner-pod",
+                DeletePropagation::Unspecified,
+            )
+            .unwrap();
         assert!(tracker.get(&pod_gvr, "ns-a", "owner-pod").is_err());
         // The cross-namespace pod should survive
         assert!(tracker.get(&pod_gvr, "ns-b", "cross-ns-pod").is_ok());
@@ -968,7 +994,9 @@ mod tests {
         obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
         tracker.create(&gvr, &gvk, obj, "default").unwrap();
 
-        let deleted = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        let deleted = tracker
+            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .unwrap();
         assert!(deleted["metadata"]["deletionTimestamp"].is_string());
         assert_eq!(deleted["metadata"]["deletionGracePeriodSeconds"], 0);
         assert_eq!(deleted["metadata"]["generation"], 2);
@@ -986,8 +1014,12 @@ mod tests {
         obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
         tracker.create(&gvr, &gvk, obj, "default").unwrap();
 
-        let first = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
-        let second = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        let first = tracker
+            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .unwrap();
+        let second = tracker
+            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .unwrap();
         assert_eq!(second, first);
     }
 
@@ -1000,7 +1032,9 @@ mod tests {
         obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
         tracker.create(&gvr, &gvk, obj, "default").unwrap();
 
-        let mut terminating = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        let mut terminating = tracker
+            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .unwrap();
         terminating["metadata"]["finalizers"] = json!([]);
         let updated = tracker
             .update(&gvr, &gvk, terminating, "default", false)
@@ -1040,7 +1074,9 @@ mod tests {
         }]);
         tracker.create(&gvr, &gvk, grandchild, ns).unwrap();
 
-        tracker.delete(&gvr, ns, "owner", true).unwrap();
+        tracker
+            .delete(&gvr, ns, "owner", DeletePropagation::Unspecified)
+            .unwrap();
 
         // The dependent is terminating and its own dependent waits for it
         assert!(tracker.get(&gvr, ns, "owner").is_err());
@@ -1063,7 +1099,9 @@ mod tests {
         let mut obj = create_test_object("test-pod", "default");
         obj["metadata"]["finalizers"] = json!(["a", "b"]);
         tracker.create(&gvr, &gvk, obj, "default").unwrap();
-        let terminating = tracker.delete(&gvr, "default", "test-pod", true).unwrap();
+        let terminating = tracker
+            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .unwrap();
 
         let mut added = terminating.clone();
         added["metadata"]["finalizers"] = json!(["a", "c"]);
@@ -1107,7 +1145,9 @@ mod tests {
         let ns_gvr = GVR::new("", "v1", "namespaces");
         create_namespace(&tracker, "team-a", &[]);
 
-        tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        tracker
+            .delete(&ns_gvr, "", "team-a", DeletePropagation::Unspecified)
+            .unwrap();
 
         assert!(tracker.get(&ns_gvr, "", "team-a").is_err());
     }
@@ -1147,7 +1187,9 @@ mod tests {
             .create(&widget_gvr, &widget_gvk, widget, "team-a")
             .unwrap();
 
-        tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        tracker
+            .delete(&ns_gvr, "", "team-a", DeletePropagation::Unspecified)
+            .unwrap();
 
         assert!(tracker.get(&ns_gvr, "", "team-a").is_err());
         assert!(tracker.get(&pod_gvr, "team-a", "pod-a").is_err());
@@ -1166,7 +1208,9 @@ mod tests {
         pod["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
         tracker.create(&pod_gvr, &pod_gvk, pod, "team-a").unwrap();
 
-        let terminating = tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        let terminating = tracker
+            .delete(&ns_gvr, "", "team-a", DeletePropagation::Unspecified)
+            .unwrap();
         assert!(terminating["metadata"]["deletionTimestamp"].is_string());
         assert_eq!(terminating["status"]["phase"], "Terminating");
         assert_eq!(tracker.get(&ns_gvr, "", "team-a").unwrap(), terminating);
@@ -1174,7 +1218,9 @@ mod tests {
         assert!(held["metadata"]["deletionTimestamp"].is_string());
 
         // A repeat delete while content remains changes nothing
-        let again = tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        let again = tracker
+            .delete(&ns_gvr, "", "team-a", DeletePropagation::Unspecified)
+            .unwrap();
         assert_eq!(again, terminating);
 
         // Clearing the last finalizer removes the object, then the namespace
@@ -1198,7 +1244,9 @@ mod tests {
         pod["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
         tracker.create(&pod_gvr, &pod_gvk, pod, "team-a").unwrap();
 
-        let mut namespace = tracker.delete(&ns_gvr, "", "team-a", true).unwrap();
+        let mut namespace = tracker
+            .delete(&ns_gvr, "", "team-a", DeletePropagation::Unspecified)
+            .unwrap();
 
         // Clearing the namespace's finalizer while content remains keeps it
         namespace["metadata"]["finalizers"] = json!([]);

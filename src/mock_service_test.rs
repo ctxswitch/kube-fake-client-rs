@@ -2012,6 +2012,294 @@ mod tests {
         assert!(child_result.is_ok(), "child should survive orphan delete");
     }
 
+    fn pod_named(name: &str, finalizers: &[&str]) -> Pod {
+        let mut pod = Pod::default();
+        pod.metadata.name = Some(name.to_string());
+        if !finalizers.is_empty() {
+            pod.metadata.finalizers = Some(finalizers.iter().map(ToString::to_string).collect());
+        }
+        pod
+    }
+
+    fn owned_by(mut pod: Pod, owners: &[&Pod]) -> Pod {
+        pod.metadata.owner_references = Some(
+            owners
+                .iter()
+                .map(
+                    |owner| k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                        api_version: "v1".to_string(),
+                        kind: "Pod".to_string(),
+                        name: owner.metadata.name.clone().unwrap(),
+                        uid: owner.metadata.uid.clone().unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .collect(),
+        );
+        pod
+    }
+
+    async fn create_pod(pods: &kube::Api<Pod>, pod: Pod) -> Pod {
+        pods.create(&PostParams::default(), &pod).await.unwrap()
+    }
+
+    async fn set_finalizers(pods: &kube::Api<Pod>, name: &str, finalizers: serde_json::Value) {
+        pods.patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(json!({ "metadata": { "finalizers": finalizers } })),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Creates `owner` with `finalizers` and a `child` it owns.
+    async fn owner_and_child(finalizers: &[&str]) -> (kube::Client, kube::Api<Pod>) {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let owner = create_pod(&pods, pod_named("owner", finalizers)).await;
+        create_pod(&pods, owned_by(pod_named("child", &[]), &[&owner])).await;
+        (client, pods)
+    }
+
+    fn has_owner_references(pod: &Pod) -> bool {
+        pod.metadata.owner_references.is_some()
+    }
+
+    /// Orphaning does not wait for finalizers, and removing them later leaves the child.
+    #[tokio::test]
+    async fn test_orphan_delete_with_finalizers_keeps_dependents() {
+        let (_, pods) = owner_and_child(&["example.com/a", "example.com/b"]).await;
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        let owner = pods.get("owner").await.unwrap();
+        assert!(owner.metadata.deletion_timestamp.is_some());
+        assert_eq!(
+            owner.metadata.finalizers,
+            Some(vec![
+                "example.com/a".to_string(),
+                "example.com/b".to_string()
+            ])
+        );
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+
+        set_finalizers(&pods, "owner", json!(["example.com/b"])).await;
+        assert!(pods.get("owner").await.is_ok());
+
+        set_finalizers(&pods, "owner", json!(null)).await;
+        assert!(pods.get("owner").await.is_err());
+        assert!(pods.get("child").await.is_ok());
+    }
+
+    /// Orphaning removes only the deleted owner's entry.
+    #[tokio::test]
+    async fn test_orphan_delete_keeps_other_owners() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let owner = create_pod(&pods, pod_named("owner", &[])).await;
+        let other = create_pod(&pods, pod_named("other", &[])).await;
+        create_pod(&pods, owned_by(pod_named("child", &[]), &[&owner, &other])).await;
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        let references = pods.get("child").await.unwrap().metadata.owner_references;
+        let uids: Vec<_> = references.into_iter().flatten().map(|r| r.uid).collect();
+        assert_eq!(uids, vec![other.metadata.uid.unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn test_orphan_delete_without_finalizers_removes_owner_reference() {
+        let (_, pods) = owner_and_child(&[]).await;
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        assert!(pods.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_orphan_dependents_option_orphans() {
+        let (client, pods) = owner_and_child(&["example.com/a"]).await;
+
+        let body = serde_json::to_vec(&json!({ "orphanDependents": true })).unwrap();
+        let req = http::Request::delete("/api/v1/namespaces/default/pods/owner")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap();
+        client.request_text(req).await.unwrap();
+
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// The response is the object before the garbage collector clears `orphan`.
+    #[tokio::test]
+    async fn test_orphan_delete_response_carries_orphan_finalizer() {
+        for (finalizers, expected) in [
+            (vec![], vec!["orphan"]),
+            (vec!["example.com/a"], vec!["example.com/a", "orphan"]),
+        ] {
+            let (_, pods) = owner_and_child(&finalizers).await;
+
+            let deleted = pods
+                .delete("owner", &DeleteParams::orphan())
+                .await
+                .unwrap()
+                .left()
+                .unwrap();
+
+            assert!(deleted.metadata.deletion_timestamp.is_some());
+            assert_eq!(deleted.metadata.finalizers.unwrap(), expected);
+        }
+    }
+
+    /// A stale copy of the response cannot be written back over the cleared `orphan`.
+    #[tokio::test]
+    async fn test_orphan_delete_response_is_older_than_stored_object() {
+        let (_, pods) = owner_and_child(&["example.com/a"]).await;
+
+        let deleted = pods
+            .delete("owner", &DeleteParams::orphan())
+            .await
+            .unwrap()
+            .left()
+            .unwrap();
+
+        let stored = pods.get("owner").await.unwrap();
+        assert_ne!(
+            deleted.metadata.resource_version,
+            stored.metadata.resource_version
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_of_object_carrying_orphan_finalizer_orphans() {
+        let (_, pods) = owner_and_child(&["orphan"]).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// An explicit policy overrides the `orphan` finalizer and removes it.
+    #[tokio::test]
+    async fn test_background_delete_removes_orphan_finalizer() {
+        let (_, pods) = owner_and_child(&["orphan", "example.com/a"]).await;
+
+        pods.delete("owner", &DeleteParams::background())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            pods.get("owner").await.unwrap().metadata.finalizers,
+            Some(vec!["example.com/a".to_string()])
+        );
+
+        set_finalizers(&pods, "owner", json!(null)).await;
+        assert!(pods.get("child").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_repeat_orphan_delete_orphans_terminating_object() {
+        let (_, pods) = owner_and_child(&["example.com/a"]).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+        let terminating = pods.get("owner").await.unwrap();
+        assert!(has_owner_references(&pods.get("child").await.unwrap()));
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+        assert_eq!(
+            pods.get("owner").await.unwrap().metadata.deletion_timestamp,
+            terminating.metadata.deletion_timestamp
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_with_finalizers_cascades_once_finalizers_are_removed() {
+        for params in [DeleteParams::default(), DeleteParams::background()] {
+            let (_, pods) = owner_and_child(&["example.com/a"]).await;
+
+            pods.delete("owner", &params).await.unwrap();
+            assert!(pods.get("child").await.is_ok());
+
+            set_finalizers(&pods, "owner", json!(null)).await;
+            assert!(pods.get("child").await.is_err());
+        }
+    }
+
+    /// The garbage collector deletes a dependent carrying `orphan` with `Orphan`.
+    #[tokio::test]
+    async fn test_cascade_honors_orphan_finalizer_on_dependent() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let owner = create_pod(&pods, pod_named("owner", &[])).await;
+        let held_owner = create_pod(&pods, pod_named("held-owner", &[])).await;
+
+        let middle = owned_by(pod_named("middle", &["orphan"]), &[&owner]);
+        let middle = create_pod(&pods, middle).await;
+        create_pod(&pods, owned_by(pod_named("child", &[]), &[&middle])).await;
+
+        let held = owned_by(
+            pod_named("held", &["orphan", "example.com/a"]),
+            &[&held_owner],
+        );
+        let held = create_pod(&pods, held).await;
+        create_pod(&pods, owned_by(pod_named("held-child", &[]), &[&held])).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+        pods.delete("held-owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("middle").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+
+        let held = pods.get("held").await.unwrap();
+        assert!(held.metadata.deletion_timestamp.is_some());
+        assert_eq!(
+            held.metadata.finalizers,
+            Some(vec!["example.com/a".to_string()])
+        );
+        assert!(!has_owner_references(
+            &pods.get("held-child").await.unwrap()
+        ));
+    }
+
+    /// The namespace controller deletes contents with an explicit `Background`.
+    #[tokio::test]
+    async fn test_namespace_delete_does_not_orphan_contents() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
+        let mut namespace = Namespace::default();
+        namespace.metadata.name = Some("team-a".to_string());
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "team-a");
+        let owner = create_pod(&pods, pod_named("owner", &["orphan"])).await;
+        let child = owned_by(pod_named("child", &["example.com/a"]), &[&owner]);
+        create_pod(&pods, child).await;
+
+        namespaces
+            .delete("team-a", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("owner").await.is_err());
+        assert!(has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
     /// Delete with `DeleteParams::background()` should cascade to children.
     #[tokio::test]
     async fn test_delete_background_cascades() {

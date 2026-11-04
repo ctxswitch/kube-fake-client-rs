@@ -7,7 +7,7 @@ use crate::gen::immutable::is_field_immutable;
 use crate::interceptor;
 use crate::label_selector;
 use crate::registry::ResourceRegistry;
-use crate::tracker::{ObjectTracker, GVK, GVR};
+use crate::tracker::{DeletePropagation, ObjectTracker, GVK, GVR};
 use crate::validator::SchemaValidator;
 use crate::{Error, Result};
 use kube::api::{ListParams, PatchParams, PostParams};
@@ -365,7 +365,7 @@ impl FakeClient {
         Ok(result)
     }
 
-    /// Delete an object
+    /// Delete an object with no propagation policy, so the resource's default applies
     #[allow(dead_code)]
     pub fn delete<K>(&self, namespace: &str, name: &str) -> Result<K>
     where
@@ -379,7 +379,9 @@ impl FakeClient {
         // Validate that delete verb is supported
         self.validate_verb(&gvk, "delete")?;
 
-        let value = self.tracker.delete(&gvr, namespace, name, true)?;
+        let value = self
+            .tracker
+            .delete(&gvr, namespace, name, DeletePropagation::Unspecified)?;
 
         let result: K = serde_json::from_value(value)?;
         Ok(result)
