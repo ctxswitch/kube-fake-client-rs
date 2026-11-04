@@ -115,7 +115,7 @@ fn has_orphan_finalizer(meta: &ObjectMeta) -> bool {
 
 /// Whether a delete orphans the dependents of the object with `meta`, decided
 /// in the order of kube-apiserver's `shouldOrphanDependents`.
-fn should_orphan(propagation: DeletePropagation, meta: &ObjectMeta) -> bool {
+fn should_orphan(propagation: DeletePropagation, gvr: &GVR, meta: &ObjectMeta) -> bool {
     match propagation {
         DeletePropagation::Orphan => true,
         DeletePropagation::Cascade => false,
@@ -128,8 +128,21 @@ fn should_orphan(propagation: DeletePropagation, meta: &ObjectMeta) -> bool {
                 FOREGROUND_FINALIZER => Some(false),
                 _ => None,
             })
-            .unwrap_or(false),
+            .unwrap_or_else(|| orphans_by_default(gvr)),
     }
+}
+
+/// The served resources whose `DefaultGarbageCollectionPolicy` is
+/// `OrphanDependents`, kept in kube-apiserver for backwards compatibility.
+fn orphans_by_default(gvr: &GVR) -> bool {
+    matches!(
+        (
+            gvr.group.as_str(),
+            gvr.version.as_str(),
+            gvr.resource.as_str()
+        ),
+        ("batch", "v1", "jobs") | ("", "v1", "replicationcontrollers")
+    )
 }
 
 pub struct ObjectTracker {
@@ -540,7 +553,7 @@ impl ObjectTracker {
             .and_then(|ns_objects| ns_objects.get_mut(name))
             .ok_or_else(|| gvr.not_found_error(namespace, name))?;
 
-        let orphan = should_orphan(propagation, &stored.metadata);
+        let orphan = should_orphan(propagation, gvr, &stored.metadata);
         self.set_orphan_finalizer(stored, orphan)?;
 
         if stored
@@ -742,8 +755,7 @@ impl ObjectTracker {
     /// Marks `stored` as terminating the way kube-apiserver's `markAsDeleting`
     /// does: bumps `generation` on the first mark, sets `deletionTimestamp` to
     /// now unless an earlier one is set, and sets `deletionGracePeriodSeconds`
-    /// to 0. The resource version changes only when the metadata did, so a
-    /// repeated delete is a no-op.
+    /// to 0. The resource version changes only when the metadata did.
     fn mark_for_deletion(&self, stored: &mut StoredObject) -> Result<()> {
         let meta = &mut stored.metadata;
         let now = jiff::Timestamp::now();

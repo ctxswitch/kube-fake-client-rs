@@ -7,10 +7,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::ClientBuilder;
-    use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
+    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::batch::v1::Job;
+    use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ReplicationController};
     use k8s_openapi::api::rbac::v1::ClusterRole;
-    use kube::api::{DeleteParams, EvictParams, LogParams, Patch, PatchParams, PostParams};
+    use kube::api::{
+        DeleteParams, EvictParams, ListParams, LogParams, Patch, PatchParams, PostParams,
+    };
+    use kube::core::NamespaceResourceScope;
+    use kube::Resource;
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use serde_json::json;
+    use std::fmt::Debug;
 
     // ============================================================================
     // Patch Type Tests
@@ -2298,6 +2307,184 @@ mod tests {
 
         assert!(pods.get("owner").await.is_err());
         assert!(has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// Creates a `K` named `owner` and a Pod named `child` it owns.
+    async fn resource_and_child<K>(namespace: &str) -> (kube::Api<K>, kube::Api<Pod>, K)
+    where
+        K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+            + Clone
+            + Debug
+            + Default
+            + DeserializeOwned
+            + Serialize,
+    {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let owners: kube::Api<K> = kube::Api::namespaced(client.clone(), namespace);
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, namespace);
+
+        let mut owner = K::default();
+        owner.meta_mut().name = Some("owner".to_string());
+        let owner = owners.create(&PostParams::default(), &owner).await.unwrap();
+
+        let mut child = pod_named("child", &[]);
+        child.metadata.owner_references = Some(vec![owner.owner_ref(&()).unwrap()]);
+        create_pod(&pods, child).await;
+        (owners, pods, owner)
+    }
+
+    async fn assert_delete_orphans_by_default<K>()
+    where
+        K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+            + Clone
+            + Debug
+            + Default
+            + DeserializeOwned
+            + Serialize,
+    {
+        let (owners, pods, _) = resource_and_child::<K>("default").await;
+        owners
+            .delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+        assert!(owners.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+
+        let (owners, pods, _) = resource_and_child::<K>("default").await;
+        owners
+            .delete_collection(&DeleteParams::default(), &ListParams::default())
+            .await
+            .unwrap();
+        assert!(owners.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    async fn assert_explicit_policy_cascades<K>()
+    where
+        K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+            + Clone
+            + Debug
+            + Default
+            + DeserializeOwned
+            + Serialize,
+    {
+        for params in [DeleteParams::background(), DeleteParams::foreground()] {
+            let (owners, pods, _) = resource_and_child::<K>("default").await;
+            owners.delete("owner", &params).await.unwrap();
+            assert!(pods.get("child").await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_job_and_replication_controller_orphan_by_default() {
+        assert_delete_orphans_by_default::<Job>().await;
+        assert_delete_orphans_by_default::<ReplicationController>().await;
+    }
+
+    #[tokio::test]
+    async fn test_job_and_replication_controller_cascade_with_explicit_policy() {
+        assert_explicit_policy_cascades::<Job>().await;
+        assert_explicit_policy_cascades::<ReplicationController>().await;
+    }
+
+    #[tokio::test]
+    async fn test_deployment_cascades_by_default() {
+        let (owners, pods, _) = resource_and_child::<Deployment>("default").await;
+
+        owners
+            .delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("child").await.is_err());
+    }
+
+    /// The garbage collector deletes dependents with `Background`, not the kind's default.
+    #[tokio::test]
+    async fn test_cascade_reaching_job_removes_its_dependents() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let jobs: kube::Api<Job> = kube::Api::namespaced(client, "default");
+
+        let owner = create_pod(&pods, pod_named("owner", &[])).await;
+        let mut job = Job::default();
+        job.metadata.name = Some("job".to_string());
+        job.metadata.owner_references = Some(vec![owner.owner_ref(&()).unwrap()]);
+        let job = jobs.create(&PostParams::default(), &job).await.unwrap();
+        let mut child = pod_named("child", &[]);
+        child.metadata.owner_references = Some(vec![job.owner_ref(&()).unwrap()]);
+        create_pod(&pods, child).await;
+
+        let mut held = Job::default();
+        held.metadata.name = Some("held".to_string());
+        held.metadata.finalizers = Some(vec!["example.com/a".to_string()]);
+        held.metadata.owner_references = Some(vec![owner.owner_ref(&()).unwrap()]);
+        let held = jobs.create(&PostParams::default(), &held).await.unwrap();
+        let mut held_child = pod_named("held-child", &[]);
+        held_child.metadata.owner_references = Some(vec![held.owner_ref(&()).unwrap()]);
+        create_pod(&pods, held_child).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(jobs.get("job").await.is_err());
+        assert!(pods.get("child").await.is_err());
+        assert!(has_owner_references(&pods.get("held-child").await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_delete_does_not_orphan_job_dependents() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
+        let mut namespace = Namespace::default();
+        namespace.metadata.name = Some("team-a".to_string());
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "team-a");
+        let jobs: kube::Api<Job> = kube::Api::namespaced(client, "team-a");
+        let mut job = Job::default();
+        job.metadata.name = Some("job".to_string());
+        let job = jobs.create(&PostParams::default(), &job).await.unwrap();
+        let mut child = pod_named("child", &["example.com/a"]);
+        child.metadata.owner_references = Some(vec![job.owner_ref(&()).unwrap()]);
+        create_pod(&pods, child).await;
+
+        namespaces
+            .delete("team-a", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(jobs.get("job").await.is_err());
+        assert!(has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// The default applies again on each delete, so `orphan` is added and cleared again.
+    #[tokio::test]
+    async fn test_repeat_delete_of_held_job_changes_resource_version() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let jobs: kube::Api<Job> = kube::Api::namespaced(client, "default");
+        let mut job = Job::default();
+        job.metadata.name = Some("job".to_string());
+        job.metadata.finalizers = Some(vec!["example.com/a".to_string()]);
+        jobs.create(&PostParams::default(), &job).await.unwrap();
+
+        jobs.delete("job", &DeleteParams::default()).await.unwrap();
+        let first = jobs.get("job").await.unwrap();
+        jobs.delete("job", &DeleteParams::default()).await.unwrap();
+        let second = jobs.get("job").await.unwrap();
+
+        assert_eq!(
+            first.metadata.deletion_timestamp,
+            second.metadata.deletion_timestamp
+        );
+        assert_ne!(
+            first.metadata.resource_version,
+            second.metadata.resource_version
+        );
     }
 
     /// Delete with `DeleteParams::background()` should cascade to children.
