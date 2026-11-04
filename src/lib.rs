@@ -37,6 +37,7 @@ pub mod label_selector;
 mod managed_fields;
 mod mock_service;
 pub mod registry;
+mod scale;
 mod tracker;
 mod utils;
 pub mod validator;
@@ -53,6 +54,8 @@ mod label_selector_test;
 mod managed_fields_test;
 #[cfg(test)]
 mod mock_service_test;
+#[cfg(test)]
+mod scale_test;
 #[cfg(test)]
 mod tracker_test;
 #[cfg(test)]

@@ -51,6 +51,12 @@ pub struct Funcs {
     pub(crate) patch_status: Option<PatchStatusInterceptor>,
     /// Intercept Replace Status subresource operations
     pub(crate) replace_status: Option<ReplaceStatusInterceptor>,
+    /// Intercept Get Scale subresource operations
+    pub(crate) get_scale: Option<GetScaleInterceptor>,
+    /// Intercept Patch Scale subresource operations
+    pub(crate) patch_scale: Option<PatchScaleInterceptor>,
+    /// Intercept Replace Scale subresource operations
+    pub(crate) replace_scale: Option<ReplaceScaleInterceptor>,
 }
 
 /// Context passed to Create interceptors
@@ -205,6 +211,48 @@ pub struct ReplaceStatusContext<'a> {
 pub type ReplaceStatusInterceptor =
     Arc<dyn Fn(ReplaceStatusContext) -> Result<Option<Value>> + Send + Sync>;
 
+pub struct GetScaleContext<'a> {
+    pub client: &'a FakeClient,
+    /// Namespace of the object
+    pub namespace: &'a str,
+    /// Name of the object
+    pub name: &'a str,
+}
+
+pub type GetScaleInterceptor = Arc<dyn Fn(GetScaleContext) -> Result<Option<Value>> + Send + Sync>;
+
+pub struct PatchScaleContext<'a> {
+    pub client: &'a FakeClient,
+    /// The patch data to apply to the `Scale`
+    pub patch: &'a Value,
+    /// Namespace of the object
+    pub namespace: &'a str,
+    /// Name of the object
+    pub name: &'a str,
+    /// Patch parameters
+    pub params: &'a PatchParams,
+    /// The type of patch being applied
+    pub patch_type: PatchType,
+}
+
+pub type PatchScaleInterceptor =
+    Arc<dyn Fn(PatchScaleContext) -> Result<Option<Value>> + Send + Sync>;
+
+pub struct ReplaceScaleContext<'a> {
+    pub client: &'a FakeClient,
+    /// The replacement `Scale`
+    pub object: &'a Value,
+    /// Namespace of the object
+    pub namespace: &'a str,
+    /// Name of the object
+    pub name: &'a str,
+    /// Post parameters
+    pub params: &'a PostParams,
+}
+
+pub type ReplaceScaleInterceptor =
+    Arc<dyn Fn(ReplaceScaleContext) -> Result<Option<Value>> + Send + Sync>;
+
 impl Funcs {
     /// Create a new empty set of interceptors
     pub fn new() -> Self {
@@ -316,6 +364,33 @@ impl Funcs {
         F: Fn(ReplaceStatusContext) -> Result<Option<Value>> + Send + Sync + 'static,
     {
         self.replace_status = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Get Scale interceptor
+    pub fn get_scale<F>(mut self, f: F) -> Self
+    where
+        F: Fn(GetScaleContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.get_scale = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Patch Scale interceptor
+    pub fn patch_scale<F>(mut self, f: F) -> Self
+    where
+        F: Fn(PatchScaleContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.patch_scale = Some(Arc::new(f));
+        self
+    }
+
+    /// Add a Replace Scale interceptor
+    pub fn replace_scale<F>(mut self, f: F) -> Self
+    where
+        F: Fn(ReplaceScaleContext) -> Result<Option<Value>> + Send + Sync + 'static,
+    {
+        self.replace_scale = Some(Arc::new(f));
         self
     }
 }
