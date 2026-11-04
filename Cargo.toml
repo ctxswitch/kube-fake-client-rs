@@ -40,6 +40,10 @@ name = "status_controller"
 path = "examples/status_controller.rs"
 
 [[example]]
+name = "pod_lifecycle"
+path = "examples/pod_lifecycle.rs"
+
+[[example]]
 name = "interceptors"
 path = "examples/interceptors.rs"
 

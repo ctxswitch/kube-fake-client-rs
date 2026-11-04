@@ -150,6 +150,37 @@ let client = ClientBuilder::new()
     .await?;
 ```
 
+### Pod phases
+
+The fake client has no kubelet, scheduler or controllers, so nothing changes a phase on its own. A Pod created through the API stays `Pending`, whatever `status` it was created with, until a test writes a new one. Code that waits for `Running` waits forever unless the test advances the Pod, so write the status as a kubelet would:
+
+```rust
+pods.patch_status(
+    "web",
+    &PatchParams::default(),
+    &Patch::Merge(json!({ "status": { "phase": "Running" } })),
+)
+.await?;
+```
+
+`replace_status` works too. A write to the main resource does not change the phase, as `replace` and `patch` keep the stored `status`. The fake does not check the order of phases, so a test can go straight from `Pending` to `Succeeded`.
+
+To start a Pod in a later phase, load it with `with_object` or a fixture:
+
+```rust
+let mut pod = Pod::default();
+pod.metadata.name = Some("web".to_string());
+pod.metadata.namespace = Some("default".to_string());
+pod.status = Some(PodStatus {
+    phase: Some("Running".to_string()),
+    ..Default::default()
+});
+
+let client = ClientBuilder::new().with_object(pod).build().await?;
+```
+
+The same applies to any other status that a real cluster's controllers maintain, such as a Deployment's `status.readyReplicas`.
+
 ### Scale subresources
 
 Deployment, ReplicaSet, StatefulSet and ReplicationController serve `get_scale`, `replace_scale` and `patch_scale` as kube-apiserver does. The `Scale` is built from the parent, a patch applies to the `Scale`, and a write changes only the parent's `spec.replicas`. Negative replicas return 422, and a stale `resourceVersion` or mismatched `uid` returns 409. `/scale` on other kinds returns 404.
@@ -300,6 +331,7 @@ For complete, runnable examples, see [`examples/`](examples/):
 - [`controller.rs`](examples/controller.rs): label management during reconciliation
 - [`custom_resource.rs`](examples/custom_resource.rs): custom resource definitions
 - [`status_controller.rs`](examples/status_controller.rs): separate spec and status updates
+- [`pod_lifecycle.rs`](examples/pod_lifecycle.rs): moving a Pod through its phases
 - [`fixture_loading.rs`](examples/fixture_loading.rs): YAML fixtures
 - [`interceptors.rs`](examples/interceptors.rs): error injection and custom behavior
 - [`schema_validations.rs`](examples/schema_validations.rs): OpenAPI schema validation (requires `validation`)
@@ -317,7 +349,7 @@ cargo run --example schema_validations --features validation
 
 # Run all examples
 for example in basic_usage controller custom_resource fixture_loading \
-               status_controller interceptors; do
+               status_controller pod_lifecycle interceptors; do
     cargo run --example $example
 done
 ```
