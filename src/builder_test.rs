@@ -161,6 +161,22 @@ mod tests {
         assert_eq!(deployment.spec.as_ref().unwrap().replicas, Some(3));
     }
 
+    /// A fixture keeps its `status`, which a create would replace.
+    #[tokio::test]
+    async fn test_load_fixture_keeps_status() {
+        let client = ClientBuilder::new()
+            .with_fixture_dir("fixtures")
+            .load_fixture_or_panic("pod-running.yaml")
+            .build()
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let pod = pods.get("running").await.unwrap();
+
+        assert_eq!(pod.status.and_then(|s| s.phase).as_deref(), Some("Running"));
+    }
+
     #[tokio::test]
     async fn test_load_multiple_fixtures() {
         let client = ClientBuilder::new()

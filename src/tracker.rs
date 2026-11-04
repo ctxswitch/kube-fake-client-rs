@@ -92,6 +92,12 @@ fn copy_status_from(from: &Value, to: &mut Value) {
 /// kind with a status subresource. A Node keeps its status, as kubelets
 /// register with one.
 fn set_initial_status(object: &mut Value, gvk: &GVK) {
+    // The ServiceCIDRStatusFieldWiping gate is on by default from 1.36.
+    k8s_openapi::k8s_if_le_1_35! {
+        if gvk.group == "networking.k8s.io" && gvk.kind == "ServiceCIDR" {
+            return;
+        }
+    }
     let initial = match (gvk.group.as_str(), gvk.kind.as_str()) {
         ("", "Node") => return,
         ("", "Pod" | "PersistentVolume") => json!({ "status": { "phase": "Pending" } }),

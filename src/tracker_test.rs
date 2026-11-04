@@ -376,6 +376,28 @@ mod tests {
         );
     }
 
+    /// kube-apiserver clears a new ServiceCIDR's status only from 1.36.
+    #[test]
+    fn test_service_cidr_status_on_create_follows_kubernetes_version() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("networking.k8s.io", "v1", "servicecidrs");
+        let gvk = GVK::new("networking.k8s.io", "v1", "ServiceCIDR");
+        let cidr = json!({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "ServiceCIDR",
+            "metadata": { "name": "kubernetes" },
+            "status": { "conditions": [] }
+        });
+        let created = tracker.create(&gvr, &gvk, cidr, "").unwrap();
+
+        k8s_openapi::k8s_if_le_1_35! {
+            assert_eq!(created["status"], json!({ "conditions": [] }));
+        }
+        k8s_openapi::k8s_if_ge_1_36! {
+            assert!(created.get("status").is_none());
+        }
+    }
+
     #[test]
     fn test_main_update_does_not_set_status() {
         let tracker = ObjectTracker::default();
