@@ -138,7 +138,7 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 
 ### Status subresources
 
-Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
+Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. A create replaces the submitted `status` with the kind's initial status: empty for most kinds, `phase: Pending` for a Pod or PersistentVolume, and `phase: Active` for a Namespace. A Node keeps the `status` it is created with, and so do objects loaded with `with_object` or fixtures. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
 
 Register a status subresource for a custom resource:
 

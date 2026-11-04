@@ -267,21 +267,20 @@ mod tests {
         let mut pod1 = Pod::default();
         pod1.metadata.name = Some("pod-1".to_string());
         pod1.metadata.namespace = Some("default".to_string());
+        let mut pod1 = client
+            .create("default", &pod1, &PostParams::default())
+            .unwrap();
         pod1.status = Some(Default::default());
         if let Some(ref mut status) = pod1.status {
             status.phase = Some("Running".to_string());
         }
         client
-            .create("default", &pod1, &PostParams::default())
+            .update_status("default", &pod1, &PostParams::default())
             .unwrap();
 
         let mut pod2 = Pod::default();
         pod2.metadata.name = Some("pod-2".to_string());
         pod2.metadata.namespace = Some("default".to_string());
-        pod2.status = Some(Default::default());
-        if let Some(ref mut status) = pod2.status {
-            status.phase = Some("Pending".to_string());
-        }
         client
             .create("default", &pod2, &PostParams::default())
             .unwrap();

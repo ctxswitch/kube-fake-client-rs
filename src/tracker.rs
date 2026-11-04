@@ -7,7 +7,7 @@ use crate::utils::{
 use crate::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -86,6 +86,19 @@ fn copy_status_from(from: &Value, to: &mut Value) {
             }
         }
     }
+}
+
+/// Sets `object`'s status to the one kube-apiserver gives a new object of a
+/// kind with a status subresource. A Node keeps its status, as kubelets
+/// register with one.
+fn set_initial_status(object: &mut Value, gvk: &GVK) {
+    let initial = match (gvk.group.as_str(), gvk.kind.as_str()) {
+        ("", "Node") => return,
+        ("", "Pod" | "PersistentVolume") => json!({ "status": { "phase": "Pending" } }),
+        ("", "Namespace") => json!({ "status": { "phase": "Active" } }),
+        _ => json!({}),
+    };
+    copy_status_from(&initial, object);
 }
 
 fn namespaces_gvr() -> GVR {
@@ -310,6 +323,10 @@ impl ObjectTracker {
         }
 
         object["metadata"] = serde_json::to_value(&meta)?;
+
+        if self.has_status_subresource(gvk) {
+            set_initial_status(&mut object, gvk);
+        }
 
         let stored = StoredObject {
             data: object.clone(),
