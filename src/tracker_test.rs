@@ -1,6 +1,5 @@
 #[cfg(test)]
 mod tests {
-    use crate::discovery::{has_subresource, list_resources, Discovery};
     use crate::tracker::*;
     use serde_json::json;
 
@@ -377,180 +376,6 @@ mod tests {
         );
     }
 
-    /// Each kind discovery lists with a status subresource gets the status its
-    /// `PrepareForCreate` sets. A kind new to discovery fails here until that
-    /// strategy has been read and the kind added.
-    #[test]
-    fn test_create_status_of_every_kind_with_a_status_subresource() {
-        const CLEARED: [&str; 25] = [
-            "CertificateSigningRequest",
-            "CronJob",
-            "DaemonSet",
-            "Deployment",
-            "DeviceTaintRule",
-            "FlowSchema",
-            "HorizontalPodAutoscaler",
-            "Ingress",
-            "Job",
-            "PersistentVolumeClaim",
-            "PodCertificateRequest",
-            "PodDisruptionBudget",
-            "PodGroup",
-            "PriorityLevelConfiguration",
-            "ReplicaSet",
-            "ReplicationController",
-            "ResourceClaim",
-            "ResourcePoolStatusRequest",
-            "ResourceQuota",
-            "Service",
-            "StatefulSet",
-            "StorageVersion",
-            "StorageVersionMigration",
-            "ValidatingAdmissionPolicy",
-            "VolumeAttachment",
-        ];
-        let submitted = json!({ "sentinel": true });
-        // The ServiceCIDRStatusFieldWiping gate is on by default from 1.36.
-        k8s_openapi::k8s_if_le_1_35! {
-            let service_cidr = Some(submitted.clone());
-        }
-        k8s_openapi::k8s_if_ge_1_36! {
-            let service_cidr = None;
-        }
-
-        let status_kinds: Vec<_> = list_resources()
-            .iter()
-            .filter(|(group, version, kind, _)| has_subresource(group, version, kind, "status"))
-            .collect();
-        assert!(!status_kinds.is_empty());
-
-        for (group, version, kind, plural) in status_kinds {
-            let gvk = GVK::new(*group, *version, *kind);
-            let gvr = GVR::new(*group, *version, *plural);
-            let namespace = if Discovery::is_namespaced(&gvk) == Some(true) {
-                "default"
-            } else {
-                ""
-            };
-            let api_version = if group.is_empty() {
-                version.to_string()
-            } else {
-                format!("{group}/{version}")
-            };
-            let object = json!({
-                "apiVersion": api_version,
-                "kind": kind,
-                "metadata": { "name": "x" },
-                "spec": { "service": { "name": "remote" } },
-                "status": submitted,
-            });
-
-            let expected = match *kind {
-                "Node" => Some(submitted.clone()),
-                "ServiceCIDR" => service_cidr.clone(),
-                "Pod" | "PersistentVolume" => Some(json!({ "phase": "Pending" })),
-                "Namespace" => Some(json!({ "phase": "Active" })),
-                // This object has no storage version and a remote service
-                "CustomResourceDefinition" | "APIService" => None,
-                other if CLEARED.contains(&other) => None,
-                other => panic!("read {other}'s PrepareForCreate and add it to this test"),
-            };
-
-            let tracker = ObjectTracker::default();
-            let created = tracker.create(&gvr, &gvk, object, namespace).unwrap();
-            let stored = tracker.get(&gvr, namespace, "x").unwrap();
-            let context = format!("{group}/{version} {kind}");
-            assert_eq!(created.get("status"), expected.as_ref(), "{context}");
-            assert_eq!(stored.get("status"), expected.as_ref(), "{context}");
-        }
-    }
-
-    #[test]
-    fn test_create_drops_node_status_config() {
-        let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "nodes");
-        let gvk = GVK::new("", "v1", "Node");
-        let node = json!({
-            "apiVersion": "v1",
-            "kind": "Node",
-            "metadata": { "name": "n1" },
-            "status": {
-                "addresses": [{ "address": "10.0.0.1", "type": "InternalIP" }],
-                "config": { "error": "stale" }
-            }
-        });
-
-        let created = tracker.create(&gvr, &gvk, node, "").unwrap();
-
-        assert_eq!(
-            created["status"],
-            json!({ "addresses": [{ "address": "10.0.0.1", "type": "InternalIP" }] })
-        );
-    }
-
-    #[test]
-    fn test_create_records_crd_storage_version() {
-        use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
-
-        let tracker = ObjectTracker::default();
-        let gvr = GVR::new("apiextensions.k8s.io", "v1", "customresourcedefinitions");
-        let gvk = GVK::new("apiextensions.k8s.io", "v1", "CustomResourceDefinition");
-        let crd = json!({
-            "apiVersion": "apiextensions.k8s.io/v1",
-            "kind": "CustomResourceDefinition",
-            "metadata": { "name": "widgets.example.com" },
-            "spec": {
-                "group": "example.com",
-                "names": { "kind": "Widget", "plural": "widgets" },
-                "scope": "Namespaced",
-                "versions": [
-                    { "name": "v1beta1", "served": true, "storage": false },
-                    { "name": "v1", "served": true, "storage": true }
-                ]
-            },
-            "status": { "storedVersions": ["v1beta1"] }
-        });
-
-        let created = tracker.create(&gvr, &gvk, crd, "").unwrap();
-
-        let crd: CustomResourceDefinition = serde_json::from_value(created).unwrap();
-        assert_eq!(
-            crd.status.and_then(|s| s.stored_versions),
-            Some(vec!["v1".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_create_marks_local_api_service_available() {
-        use k8s_openapi::kube_aggregator::pkg::apis::apiregistration::v1::APIService;
-
-        let tracker = ObjectTracker::default();
-        let gvr = GVR::new("apiregistration.k8s.io", "v1", "apiservices");
-        let gvk = GVK::new("apiregistration.k8s.io", "v1", "APIService");
-        let api_service = json!({
-            "apiVersion": "apiregistration.k8s.io/v1",
-            "kind": "APIService",
-            "metadata": { "name": "v1.example.com" },
-            "spec": {
-                "group": "example.com",
-                "version": "v1",
-                "groupPriorityMinimum": 1000,
-                "versionPriority": 15
-            },
-            "status": { "conditions": [{ "type": "Stale", "status": "True" }] }
-        });
-
-        let created = tracker.create(&gvr, &gvk, api_service, "").unwrap();
-
-        let api_service: APIService = serde_json::from_value(created).unwrap();
-        let conditions = api_service.status.and_then(|s| s.conditions).unwrap();
-        assert_eq!(conditions.len(), 1);
-        assert_eq!(conditions[0].type_, "Available");
-        assert_eq!(conditions[0].status, "True");
-        assert_eq!(conditions[0].reason.as_deref(), Some("Local"));
-        assert!(conditions[0].last_transition_time.is_some());
-    }
-
     #[test]
     fn test_main_update_does_not_set_status() {
         let tracker = ObjectTracker::default();
@@ -684,13 +509,13 @@ mod tests {
         let mut obj = create_test_object("test-pod", "default");
         obj["status"] = json!({"phase": "Pending"});
 
-        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
-        assert_eq!(created["status"]["phase"], "Pending");
+        let added = tracker.add(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(added["status"]["phase"], "Pending");
         assert!(tracker.has_status_subresource(&gvk));
 
         // Try to update spec AND status in a regular update
         let mut updated_obj = create_test_object("test-pod", "default");
-        updated_obj["metadata"]["resourceVersion"] = json!("1");
+        updated_obj["metadata"]["resourceVersion"] = added["metadata"]["resourceVersion"].clone();
         updated_obj["spec"]["containers"][0]["image"] = json!("nginx:latest");
         updated_obj["status"] = json!({"phase": "Running"}); // Try to change status
 

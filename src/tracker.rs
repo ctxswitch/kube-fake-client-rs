@@ -7,7 +7,7 @@ use crate::utils::{
 use crate::{Error, Result};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -86,54 +86,6 @@ fn copy_status_from(from: &Value, to: &mut Value) {
             }
         }
     }
-}
-
-/// Sets `object`'s status to the one kube-apiserver gives a new object of a
-/// kind with a status subresource. A Node keeps its status apart from `config`,
-/// as kubelets register with one.
-fn set_initial_status(object: &mut Value, gvk: &GVK) {
-    // The ServiceCIDRStatusFieldWiping gate is on by default from 1.36.
-    k8s_openapi::k8s_if_le_1_35! {
-        if gvk.group == "networking.k8s.io" && gvk.kind == "ServiceCIDR" {
-            return;
-        }
-    }
-    let initial = match (gvk.group.as_str(), gvk.kind.as_str()) {
-        ("", "Node") => {
-            if let Some(status) = object.get_mut("status").and_then(Value::as_object_mut) {
-                status.remove("config");
-            }
-            return;
-        }
-        ("", "Pod" | "PersistentVolume") => json!({ "status": { "phase": "Pending" } }),
-        ("", "Namespace") => json!({ "status": { "phase": "Active" } }),
-        ("apiextensions.k8s.io", "CustomResourceDefinition") => {
-            let storage_version = object["spec"]["versions"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|version| version["storage"] == true);
-            match storage_version {
-                Some(version) => json!({ "status": { "storedVersions": [version["name"]] } }),
-                None => json!({}),
-            }
-        }
-        ("apiregistration.k8s.io", "APIService") if object["spec"]["service"].is_null() => {
-            json!({
-                "status": {
-                    "conditions": [{
-                        "type": "Available",
-                        "status": "True",
-                        "lastTransitionTime": Time(jiff::Timestamp::now()),
-                        "reason": "Local",
-                        "message": "Local APIServices are always available",
-                    }]
-                }
-            })
-        }
-        _ => json!({}),
-    };
-    copy_status_from(&initial, object);
 }
 
 fn namespaces_gvr() -> GVR {
@@ -359,8 +311,11 @@ impl ObjectTracker {
 
         object["metadata"] = serde_json::to_value(&meta)?;
 
-        if self.has_status_subresource(gvk) {
-            set_initial_status(&mut object, gvk);
+        // A create cannot set status, apart from a Node's, as kubelets register with one.
+        if self.has_status_subresource(gvk) && !(gvk.group.is_empty() && gvk.kind == "Node") {
+            if let Some(fields) = object.as_object_mut() {
+                fields.remove("status");
+            }
         }
 
         let stored = StoredObject {

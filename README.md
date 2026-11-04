@@ -138,7 +138,7 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 
 ### Status subresources
 
-Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. A create replaces the submitted `status` with the kind's initial status: empty for most kinds, `phase: Pending` for a Pod or PersistentVolume, `phase: Active` for a Namespace, `storedVersions` for a CustomResourceDefinition, and an `Available` condition for an APIService without `spec.service`. A Node keeps the `status` it is created with, apart from `config`, as does a ServiceCIDR before Kubernetes 1.36. Objects loaded with `with_object` or fixtures keep their `status`. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
+Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. A create drops the submitted `status`, so a new object has none until a status write. A Node keeps the `status` it is created with, as kubelets register with one, and objects loaded with `with_object` or fixtures keep theirs. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
 
 Register a status subresource for a custom resource:
 
@@ -152,7 +152,7 @@ let client = ClientBuilder::new()
 
 ### Pod phases
 
-The fake client has no kubelet, scheduler or controllers, so nothing changes a phase on its own. A Pod created through the API stays `Pending`, whatever `status` it was created with, until a test writes a new one. Code that waits for `Running` waits forever unless the test advances the Pod, so write the status as a kubelet would:
+The fake client has no kubelet, scheduler or controllers, so nothing sets or changes a status on its own. A Pod created through the API has no phase until a test writes one, where a real cluster reports `Pending`. Code that waits for `Running` waits forever unless the test advances the Pod, and code that reads the phase of a new Pod needs the test to set it, so write the status as a kubelet would:
 
 ```rust
 pods.patch_status(
@@ -163,9 +163,9 @@ pods.patch_status(
 .await?;
 ```
 
-`replace_status` works too. A write to the main resource does not change the phase, as `replace` and `patch` keep the stored `status`. The fake does not check the order of phases, so a test can go straight from `Pending` to `Succeeded`.
+`replace_status` works too. A write to the main resource does not change the phase, as `replace` and `patch` keep the stored `status`. The fake does not check the order of phases, so a test can go straight to `Succeeded`.
 
-To start a Pod in a later phase, load it with `with_object` or a fixture:
+To start with a Pod already in a phase, load it with `with_object` or a fixture:
 
 ```rust
 let mut pod = Pod::default();
@@ -179,7 +179,9 @@ pod.status = Some(PodStatus {
 let client = ClientBuilder::new().with_object(pod).build().await?;
 ```
 
-The same applies to any other status that a real cluster's controllers maintain, such as a Deployment's `status.readyReplicas`.
+Code that reads the phase from the create response leaves no gap for a status write. A `create` interceptor can supply the phase instead, as [`pod_lifecycle.rs`](examples/pod_lifecycle.rs) shows.
+
+The same applies to any other status a real cluster sets, such as a Namespace's `phase: Active` or a Deployment's `status.readyReplicas`.
 
 ### Scale subresources
 

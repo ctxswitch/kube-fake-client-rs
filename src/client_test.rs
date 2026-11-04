@@ -281,8 +281,15 @@ mod tests {
         let mut pod2 = Pod::default();
         pod2.metadata.name = Some("pod-2".to_string());
         pod2.metadata.namespace = Some("default".to_string());
-        client
+        let mut pod2 = client
             .create("default", &pod2, &PostParams::default())
+            .unwrap();
+        pod2.status = Some(Default::default());
+        if let Some(ref mut status) = pod2.status {
+            status.phase = Some("Pending".to_string());
+        }
+        client
+            .update_status("default", &pod2, &PostParams::default())
             .unwrap();
 
         // Filter by status.phase - this is pre-registered for Pods

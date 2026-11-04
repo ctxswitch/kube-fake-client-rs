@@ -1932,14 +1932,11 @@ mod tests {
         assert!(replaced.status.is_none());
     }
 
-    /// A create replaces the submitted status with the kind's initial status,
-    /// through POST and through a server-side apply that creates the object.
+    /// A create drops the status of a kind with a status subresource, through
+    /// POST and through a server-side apply that creates the object.
     #[tokio::test]
-    async fn test_create_sets_initial_status() {
+    async fn test_create_drops_submitted_status() {
         use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus};
-        use k8s_openapi::api::core::v1::{
-            NamespaceStatus, PersistentVolume, PersistentVolumeStatus, PodStatus,
-        };
         use widget::Widget;
 
         let client = ClientBuilder::new()
@@ -1961,18 +1958,6 @@ mod tests {
         assert!(deployments.get("web").await.unwrap().status.is_none());
 
         let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
-        let mut pod = Pod::default();
-        pod.metadata.name = Some("p".to_string());
-        pod.status = Some(PodStatus {
-            phase: Some("Running".to_string()),
-            ..Default::default()
-        });
-        let created = pods.create(&pp, &pod).await.unwrap();
-        assert_eq!(
-            created.status.and_then(|s| s.phase).as_deref(),
-            Some("Pending")
-        );
-
         let applied = pods
             .patch(
                 "applied",
@@ -1986,36 +1971,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(
-            applied.status.and_then(|s| s.phase).as_deref(),
-            Some("Pending")
-        );
-
-        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
-        let mut namespace = Namespace::default();
-        namespace.metadata.name = Some("team-a".to_string());
-        namespace.status = Some(NamespaceStatus {
-            phase: Some("Terminating".to_string()),
-            ..Default::default()
-        });
-        let created = namespaces.create(&pp, &namespace).await.unwrap();
-        assert_eq!(
-            created.status.and_then(|s| s.phase).as_deref(),
-            Some("Active")
-        );
-
-        let volumes: kube::Api<PersistentVolume> = kube::Api::all(client.clone());
-        let mut volume = PersistentVolume::default();
-        volume.metadata.name = Some("pv".to_string());
-        volume.status = Some(PersistentVolumeStatus {
-            phase: Some("Bound".to_string()),
-            ..Default::default()
-        });
-        let created = volumes.create(&pp, &volume).await.unwrap();
-        assert_eq!(
-            created.status.and_then(|s| s.phase).as_deref(),
-            Some("Pending")
-        );
+        assert!(applied.status.is_none());
 
         let widgets: kube::Api<Widget> = kube::Api::namespaced(client, "default");
         let created = widgets.create(&pp, &widget::new("w")).await.unwrap();
