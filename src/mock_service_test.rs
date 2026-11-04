@@ -3112,6 +3112,52 @@ mod tests {
         assert_eq!(deployments.get("web").await.unwrap(), created);
     }
 
+    /// POST and DELETE on the subresources of a custom resource return 405 when
+    /// they are registered, leaving the parent unchanged, and 404 when they are not.
+    #[tokio::test]
+    async fn test_unsupported_methods_on_custom_resource_subresources() {
+        use widget::Widget;
+
+        let client = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .with_status_subresource::<Widget>()
+            .with_scale_subresource::<Widget>(".spec.replicas", ".status.replicas", None)
+            .build()
+            .await
+            .unwrap();
+        let widgets: kube::Api<Widget> = kube::Api::namespaced(client.clone(), "default");
+        let created = widgets
+            .create(&PostParams::default(), &widget::new("w"))
+            .await
+            .unwrap();
+        let unregistered = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .build()
+            .await
+            .unwrap();
+        kube::Api::<Widget>::namespaced(unregistered.clone(), "default")
+            .create(&PostParams::default(), &widget::new("w"))
+            .await
+            .unwrap();
+
+        for sub in ["status", "scale"] {
+            let path = format!("/apis/example.com/v1/namespaces/default/widgets/w/{sub}");
+            for method in ["POST", "DELETE"] {
+                assert_subresource_method_not_allowed(
+                    request_without_body(&client, method, &path).await,
+                );
+                assert_subresource_not_found(
+                    request_without_body(&unregistered, method, &path).await,
+                    &format!("widgets/{sub} \"w\""),
+                );
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(widgets.get("w").await.unwrap()).unwrap(),
+            serde_json::to_value(created).unwrap()
+        );
+    }
+
     /// A resource the fake does not know has no subresource paths, so every
     /// method on its `/status` or `/scale` returns 404.
     #[tokio::test]
@@ -3120,8 +3166,14 @@ mod tests {
 
         for sub in ["status", "scale"] {
             let path = format!("/apis/example.com/v1/namespaces/default/widgets/w/{sub}");
-            for method in ["GET", "POST", "DELETE"] {
-                match request_without_body(&client, method, &path).await {
+            for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+                let req = http::Request::builder()
+                    .method(method)
+                    .uri(path.as_str())
+                    .header("Content-Type", "application/merge-patch+json")
+                    .body(b"{}".to_vec())
+                    .unwrap();
+                match client.request_text(req).await {
                     Err(kube::Error::Api(err)) => {
                         assert_eq!(err.code, 404, "{method} {path}: {err:?}")
                     }
