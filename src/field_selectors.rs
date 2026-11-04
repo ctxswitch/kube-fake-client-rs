@@ -11,6 +11,7 @@ fn get_string_field(obj: &Value, parent: &str, field: &str) -> Option<Vec<String
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_str())
         .map(|s| vec![s.to_string()])
+        .or(Some(Vec::new()))
 }
 
 /// Helper to extract a boolean field at a given path
@@ -19,6 +20,7 @@ fn get_bool_field(obj: &Value, parent: &str, field: &str) -> Option<Vec<String>>
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_bool())
         .map(|b| vec![b.to_string()])
+        .or(Some(Vec::new()))
 }
 
 /// Helper to extract an integer field at a given path
@@ -27,6 +29,7 @@ fn get_int_field(obj: &Value, parent: &str, field: &str) -> Option<Vec<String>> 
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_i64())
         .map(|n| vec![n.to_string()])
+        .or(Some(Vec::new()))
 }
 
 /// Helper to extract a top-level string field
@@ -34,6 +37,7 @@ fn get_top_level_string(obj: &Value, field: &str) -> Option<Vec<String>> {
     obj.get(field)
         .and_then(|v| v.as_str())
         .map(|s| vec![s.to_string()])
+        .or(Some(Vec::new()))
 }
 
 /// Extract value from pre-registered field paths that are supported by Kubernetes
@@ -45,6 +49,9 @@ fn get_top_level_string(obj: &Value, field: &str) -> Option<Vec<String>> {
 /// - metadata.namespace
 ///
 /// Resource-specific pre-registered fields are automatically supported based on the Kind.
+///
+/// Returns `None` for a field that is not pre-registered, and an empty list for
+/// one that is but is unset on `obj_value`.
 pub fn extract_preregistered_field_value(
     obj_value: &Value,
     field: &str,

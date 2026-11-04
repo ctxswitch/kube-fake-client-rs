@@ -281,23 +281,25 @@ mod tests {
         let mut pod2 = Pod::default();
         pod2.metadata.name = Some("pod-2".to_string());
         pod2.metadata.namespace = Some("default".to_string());
-        let mut pod2 = client
+        client
             .create("default", &pod2, &PostParams::default())
             .unwrap();
-        pod2.status = Some(Default::default());
-        if let Some(ref mut status) = pod2.status {
-            status.phase = Some("Pending".to_string());
-        }
-        client
-            .update_status("default", &pod2, &PostParams::default())
-            .unwrap();
 
-        // Filter by status.phase - this is pre-registered for Pods
+        // Filter by status.phase - this is pre-registered for Pods. pod-2 has no
+        // phase, so it does not match
         let params = ListParams::default().fields("status.phase=Running");
         let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
 
         assert_eq!(pods.len(), 1);
         assert_eq!(pods[0].metadata.name, Some("pod-1".to_string()));
+
+        // A field that is not pre-registered still needs an index
+        let params = ListParams::default().fields("status.hostIP=10.0.0.1");
+        let unsupported: crate::Result<Vec<Pod>> = client.list(Some("default"), &params);
+        assert!(matches!(
+            unsupported,
+            Err(crate::Error::IndexNotFound { .. })
+        ));
     }
 
     #[test]
