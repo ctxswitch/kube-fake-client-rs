@@ -511,13 +511,13 @@ mod tests {
         let mut obj = create_test_object("test-pod", "default");
         obj["status"] = json!({"phase": "Pending"});
 
-        let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
-        assert_eq!(created["status"]["phase"], "Pending");
+        let added = tracker.add(&gvr, &gvk, obj, "default").unwrap();
+        assert_eq!(added["status"]["phase"], "Pending");
         assert!(tracker.has_status_subresource(&gvk));
 
         // Try to update spec AND status in a regular update
         let mut updated_obj = create_test_object("test-pod", "default");
-        updated_obj["metadata"]["resourceVersion"] = json!("1");
+        updated_obj["metadata"]["resourceVersion"] = added["metadata"]["resourceVersion"].clone();
         updated_obj["spec"]["containers"][0]["image"] = json!("nginx:latest");
         updated_obj["status"] = json!({"phase": "Running"}); // Try to change status
 

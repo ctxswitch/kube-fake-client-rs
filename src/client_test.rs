@@ -267,31 +267,105 @@ mod tests {
         let mut pod1 = Pod::default();
         pod1.metadata.name = Some("pod-1".to_string());
         pod1.metadata.namespace = Some("default".to_string());
+        let mut pod1 = client
+            .create("default", &pod1, &PostParams::default())
+            .unwrap();
         pod1.status = Some(Default::default());
         if let Some(ref mut status) = pod1.status {
             status.phase = Some("Running".to_string());
         }
         client
-            .create("default", &pod1, &PostParams::default())
+            .update_status("default", &pod1, &PostParams::default())
             .unwrap();
 
         let mut pod2 = Pod::default();
         pod2.metadata.name = Some("pod-2".to_string());
         pod2.metadata.namespace = Some("default".to_string());
-        pod2.status = Some(Default::default());
-        if let Some(ref mut status) = pod2.status {
-            status.phase = Some("Pending".to_string());
-        }
         client
             .create("default", &pod2, &PostParams::default())
             .unwrap();
 
-        // Filter by status.phase - this is pre-registered for Pods
+        // Filter by status.phase - this is pre-registered for Pods. pod-2 has no
+        // phase, so it does not match
         let params = ListParams::default().fields("status.phase=Running");
         let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
 
         assert_eq!(pods.len(), 1);
         assert_eq!(pods[0].metadata.name, Some("pod-1".to_string()));
+
+        // A field that is not pre-registered still needs an index
+        let params = ListParams::default().fields("status.hostIP=10.0.0.1");
+        let unsupported: crate::Result<Vec<Pod>> = client.list(Some("default"), &params);
+        assert!(matches!(
+            unsupported,
+            Err(crate::Error::IndexNotFound { .. })
+        ));
+    }
+
+    /// A pre-registered field that is unset on an object does not match, whatever
+    /// its type.
+    #[test]
+    fn test_field_selector_unset_fields_do_not_match() {
+        use k8s_openapi::api::apps::v1::ReplicaSet;
+        use k8s_openapi::api::core::v1::{Node, Secret};
+
+        let client = FakeClient::new();
+        let pp = PostParams::default();
+
+        let mut node = Node::default();
+        node.metadata.name = Some("n1".to_string());
+        client.create("", &node, &pp).unwrap();
+        let params = ListParams::default().fields("spec.unschedulable=true");
+        assert!(client.list::<Node>(None, &params).unwrap().is_empty());
+
+        let mut replica_set = ReplicaSet::default();
+        replica_set.metadata.name = Some("rs".to_string());
+        client.create("default", &replica_set, &pp).unwrap();
+        let params = ListParams::default().fields("status.replicas=1");
+        let replica_sets = client.list::<ReplicaSet>(Some("default"), &params);
+        assert!(replica_sets.unwrap().is_empty());
+
+        let mut secret = Secret::default();
+        secret.metadata.name = Some("s".to_string());
+        client.create("default", &secret, &pp).unwrap();
+        let params = ListParams::default().fields("type=Opaque");
+        let secrets = client.list::<Secret>(Some("default"), &params);
+        assert!(secrets.unwrap().is_empty());
+    }
+
+    /// A custom index serves a field that is not pre-registered, and one that is
+    /// pre-registered but unset on the object.
+    #[test]
+    fn test_field_selector_falls_back_to_custom_index() {
+        use crate::client::IndexerFunc;
+        use crate::tracker::GVK;
+        use std::sync::Arc;
+
+        let client = FakeClient::new();
+        let tier: IndexerFunc = Arc::new(|_| vec!["gold".to_string()]);
+        let phase: IndexerFunc = Arc::new(|_| vec!["Running".to_string()]);
+        client
+            .indexes
+            .write()
+            .unwrap()
+            .entry(GVK::new("", "v1", "Pod"))
+            .or_default()
+            .extend([
+                ("custom.tier".to_string(), tier),
+                ("status.phase".to_string(), phase),
+            ]);
+
+        let mut pod = Pod::default();
+        pod.metadata.name = Some("pod-1".to_string());
+        client
+            .create("default", &pod, &PostParams::default())
+            .unwrap();
+
+        for selector in ["custom.tier=gold", "status.phase=Running"] {
+            let params = ListParams::default().fields(selector);
+            let pods: Vec<Pod> = client.list(Some("default"), &params).unwrap();
+            assert_eq!(pods.len(), 1, "{selector}");
+        }
     }
 
     #[test]

@@ -457,19 +457,21 @@ impl FakeClient {
                     let obj_value = serde_json::to_value(&obj)?;
 
                     // Try pre-registered fields first (no index required)
-                    let values = if let Some(preregistered_values) =
-                        extract_preregistered_field_value(&obj_value, field, &gvk.kind)
-                    {
-                        preregistered_values
-                    } else if let Some(indexer) = self.get_index(gvk, field) {
+                    let preregistered =
+                        extract_preregistered_field_value(&obj_value, field, &gvk.kind);
+                    let values = match (preregistered, self.get_index(gvk, field)) {
+                        (Some(values), _) if !values.is_empty() => values,
                         // Fall back to custom registered index
-                        indexer(&obj_value)
-                    } else {
+                        (_, Some(indexer)) => indexer(&obj_value),
+                        // Pre-registered, and unset on this object
+                        (Some(values), None) => values,
                         // Field not supported
-                        return Err(Error::IndexNotFound {
-                            kind: format!("{:?}", gvk),
-                            field: field.to_string(),
-                        });
+                        (None, None) => {
+                            return Err(Error::IndexNotFound {
+                                kind: format!("{:?}", gvk),
+                                field: field.to_string(),
+                            });
+                        }
                     };
 
                     if !values.iter().any(|v| v == expected_value) {

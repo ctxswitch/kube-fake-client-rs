@@ -1938,7 +1938,90 @@ mod tests {
             .replace("w", &PostParams::default(), &current)
             .await
             .unwrap();
-        assert_eq!(replaced.status.unwrap().replicas, 1);
+        assert!(replaced.status.is_none());
+    }
+
+    /// A create drops the status of a kind with a status subresource, through
+    /// POST and through a server-side apply that creates the object.
+    #[tokio::test]
+    async fn test_create_drops_submitted_status() {
+        use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus};
+        use widget::Widget;
+
+        let client = ClientBuilder::new()
+            .with_resource::<Widget>()
+            .with_status_subresource::<Widget>()
+            .build()
+            .await
+            .unwrap();
+        let pp = PostParams::default();
+
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client.clone(), "default");
+        let mut deployment = web_deployment();
+        deployment.status = Some(DeploymentStatus {
+            replicas: Some(7),
+            ..Default::default()
+        });
+        let created = deployments.create(&pp, &deployment).await.unwrap();
+        assert!(created.status.is_none());
+        assert!(deployments.get("web").await.unwrap().status.is_none());
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let applied = pods
+            .patch(
+                "applied",
+                &PatchParams::apply("test"),
+                &Patch::Apply(json!({
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "metadata": { "name": "applied" },
+                    "status": { "phase": "Running" }
+                })),
+            )
+            .await
+            .unwrap();
+        assert!(applied.status.is_none());
+
+        let widgets: kube::Api<Widget> = kube::Api::namespaced(client, "default");
+        let created = widgets.create(&pp, &widget::new("w")).await.unwrap();
+        assert!(created.status.is_none());
+    }
+
+    /// A Node keeps the status it is created with, and so does an object
+    /// loaded with `with_object`.
+    #[tokio::test]
+    async fn test_status_kept_for_nodes_and_seeded_objects() {
+        use k8s_openapi::api::apps::v1::{Deployment, DeploymentStatus};
+        use k8s_openapi::api::core::v1::{NodeAddress, NodeStatus};
+
+        let mut seeded = web_deployment();
+        seeded.metadata.namespace = Some("default".to_string());
+        seeded.status = Some(DeploymentStatus {
+            replicas: Some(7),
+            ..Default::default()
+        });
+        let client = ClientBuilder::new()
+            .with_object(seeded)
+            .build()
+            .await
+            .unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client.clone(), "default");
+        let stored = deployments.get("web").await.unwrap();
+        assert_eq!(stored.status.and_then(|s| s.replicas), Some(7));
+
+        let nodes: kube::Api<Node> = kube::Api::all(client);
+        let status = NodeStatus {
+            addresses: Some(vec![NodeAddress {
+                address: "10.0.0.1".to_string(),
+                type_: "InternalIP".to_string(),
+            }]),
+            ..Default::default()
+        };
+        let mut node = Node::default();
+        node.metadata.name = Some("n1".to_string());
+        node.status = Some(status.clone());
+        let created = nodes.create(&PostParams::default(), &node).await.unwrap();
+        assert_eq!(created.status, Some(status));
     }
 
     /// Without a selector path the `Scale` has no selector, and without

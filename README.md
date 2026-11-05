@@ -138,7 +138,7 @@ async fn test_controller_adds_label() -> Result<(), Box<dyn std::error::Error>> 
 
 ### Status subresources
 
-Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
+Built-in kinds with a status subresource in the Kubernetes API, such as `Pod` and `Deployment`, get one with no configuration, as in controller-runtime's fake client. A create drops the submitted `status`, so a new object has none until a status write. A Node keeps the `status` it is created with, as kubelets register with one, and objects loaded with `with_object` or fixtures keep theirs. An update of the main resource keeps the stored `status`, and a status update changes only `status`. `/status` on a kind without a status subresource returns 404.
 
 Register a status subresource for a custom resource:
 
@@ -149,6 +149,39 @@ let client = ClientBuilder::new()
     .build()
     .await?;
 ```
+
+### Pod phases
+
+The fake client has no kubelet, scheduler or controllers, so nothing sets or changes a status on its own. A Pod created through the API has no phase until a test writes one, where a real cluster reports `Pending`. Code that waits for `Running` waits forever unless the test advances the Pod, and code that reads the phase of a new Pod needs the test to set it, so write the status as a kubelet would:
+
+```rust
+pods.patch_status(
+    "web",
+    &PatchParams::default(),
+    &Patch::Merge(json!({ "status": { "phase": "Running" } })),
+)
+.await?;
+```
+
+`replace_status` works too. A write to the main resource does not change the phase, as `replace` and `patch` keep the stored `status`. The fake does not check the order of phases, so a test can go straight to `Succeeded`.
+
+To start with a Pod already in a phase, load it with `with_object` or a fixture:
+
+```rust
+let mut pod = Pod::default();
+pod.metadata.name = Some("web".to_string());
+pod.metadata.namespace = Some("default".to_string());
+pod.status = Some(PodStatus {
+    phase: Some("Running".to_string()),
+    ..Default::default()
+});
+
+let client = ClientBuilder::new().with_object(pod).build().await?;
+```
+
+Code that reads the phase from the create response leaves no gap for a status write. A `create` interceptor can supply the phase instead, as [`pod_lifecycle.rs`](examples/pod_lifecycle.rs) shows.
+
+The same applies to any other status a real cluster sets, such as a Namespace's `phase: Active` or a Deployment's `status.readyReplicas`.
 
 ### Scale subresources
 
@@ -300,6 +333,7 @@ For complete, runnable examples, see [`examples/`](examples/):
 - [`controller.rs`](examples/controller.rs): label management during reconciliation
 - [`custom_resource.rs`](examples/custom_resource.rs): custom resource definitions
 - [`status_controller.rs`](examples/status_controller.rs): separate spec and status updates
+- [`pod_lifecycle.rs`](examples/pod_lifecycle.rs): moving a Pod through its phases
 - [`fixture_loading.rs`](examples/fixture_loading.rs): YAML fixtures
 - [`interceptors.rs`](examples/interceptors.rs): error injection and custom behavior
 - [`schema_validations.rs`](examples/schema_validations.rs): OpenAPI schema validation (requires `validation`)
@@ -317,7 +351,7 @@ cargo run --example schema_validations --features validation
 
 # Run all examples
 for example in basic_usage controller custom_resource fixture_loading \
-               status_controller interceptors; do
+               status_controller pod_lifecycle interceptors; do
     cargo run --example $example
 done
 ```

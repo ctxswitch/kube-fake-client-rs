@@ -5,6 +5,7 @@
 - **basic_usage.rs** - Basic CRUD operations with namespaced and cluster-scoped resources
 - **controller.rs** - Pod controller with testing
 - **status_controller.rs** - Deployment status controller using status subresource
+- **pod_lifecycle.rs** - Moving a Pod through its phases, since nothing does it on its own
 - **custom_resource.rs** - Using custom resources (CRDs)
 - **fixture_loading.rs** - Loading fixtures from YAML files
 - **interceptors.rs** - Interceptor usage patterns

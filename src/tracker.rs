@@ -364,6 +364,13 @@ impl ObjectTracker {
 
         object["metadata"] = serde_json::to_value(&meta)?;
 
+        // A create cannot set status, apart from a Node's, as kubelets register with one.
+        if self.has_status_subresource(gvk) && !(gvk.group.is_empty() && gvk.kind == "Node") {
+            if let Some(fields) = object.as_object_mut() {
+                fields.remove("status");
+            }
+        }
+
         let stored = StoredObject {
             data: object.clone(),
             gvk: gvk.clone(),
