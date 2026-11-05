@@ -24,9 +24,6 @@ pub fn ensure_metadata(meta: &mut ObjectMeta, namespace: &str) {
     if meta.uid.is_none() {
         meta.uid = Some(uuid::Uuid::new_v4().to_string());
     }
-    if meta.generation.is_none() {
-        meta.generation = Some(1);
-    }
 }
 
 pub fn deletion_timestamp_equal(

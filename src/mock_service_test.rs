@@ -9,8 +9,9 @@ mod tests {
     use crate::ClientBuilder;
     use k8s_openapi::api::apps::v1::Deployment;
     use k8s_openapi::api::batch::v1::Job;
-    use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ReplicationController};
+    use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, Pod, ReplicationController};
     use k8s_openapi::api::rbac::v1::ClusterRole;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ManagedFieldsEntry;
     use kube::api::{
         DeleteParams, EvictParams, ListParams, LogParams, Patch, PatchParams, PostParams,
     };
@@ -1649,6 +1650,295 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    /// A write that changes nothing keeps `resourceVersion` on every write path,
+    /// and the next real write gets the next one.
+    #[tokio::test]
+    async fn test_noop_writes_keep_resource_version() {
+        use k8s_openapi::api::apps::v1::Deployment;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
+        let params = PatchParams::default();
+        deployments
+            .create(&PostParams::default(), &web_deployment())
+            .await
+            .unwrap();
+        let status = Patch::Merge(json!({ "status": { "replicas": 1 } }));
+        let patched = deployments
+            .patch_status("web", &params, &status)
+            .await
+            .unwrap();
+        let version = patched.metadata.resource_version;
+
+        // Built from scratch: no namespace, uid, resourceVersion or status.
+        let replaced = deployments
+            .replace("web", &PostParams::default(), &web_deployment())
+            .await
+            .unwrap();
+        assert_eq!(replaced.metadata.resource_version, version);
+        assert_eq!(replaced.metadata.namespace.as_deref(), Some("default"));
+
+        let merged = deployments
+            .patch(
+                "web",
+                &params,
+                &Patch::Merge(json!({ "spec": { "replicas": 1 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(merged.metadata.resource_version, version);
+
+        let status_patched = deployments
+            .patch_status("web", &params, &status)
+            .await
+            .unwrap();
+        assert_eq!(status_patched.metadata.resource_version, version);
+
+        let scaled = deployments
+            .patch_scale(
+                "web",
+                &params,
+                &Patch::Merge(json!({ "spec": { "replicas": 1 } })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(scaled.metadata.resource_version, version);
+
+        let written = deployments
+            .patch(
+                "web",
+                &params,
+                &Patch::Merge(json!({ "metadata": { "labels": { "team": "b" } } })),
+            )
+            .await
+            .unwrap();
+        let next = version.unwrap().parse::<u64>().unwrap() + 1;
+        assert_eq!(written.metadata.resource_version, Some(next.to_string()));
+    }
+
+    /// The conflict check runs before a write is found to change nothing.
+    #[tokio::test]
+    async fn test_noop_replace_with_stale_resource_version_conflicts() {
+        use k8s_openapi::api::apps::v1::Deployment;
+
+        let client = ClientBuilder::new().build().await.unwrap();
+        let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
+        let mut stale = deployments
+            .create(&PostParams::default(), &web_deployment())
+            .await
+            .unwrap();
+        stale.metadata.resource_version = Some("999".to_string());
+
+        let error = deployments
+            .replace("web", &PostParams::default(), &stale)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, kube::Error::Api(status) if status.code == 409),
+            "{error:?}"
+        );
+    }
+
+    const SEEDED_TIME: &str = "2020-01-01T00:00:00Z";
+
+    fn config_map_manifest(data: serde_json::Value) -> serde_json::Value {
+        json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": "applied", "namespace": "default" },
+            "data": data,
+        })
+    }
+
+    /// The entry an apply of `manifest` records, stamped in the past so a test
+    /// can tell it from one written now.
+    fn seeded_entry(manager: &str, manifest: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "manager": manager,
+            "operation": "Apply",
+            "apiVersion": "v1",
+            "fieldsType": "FieldsV1",
+            "fieldsV1": crate::fields_v1::build_fields_v1(manifest),
+            "time": SEEDED_TIME,
+        })
+    }
+
+    /// A client holding a ConfigMap with `data` and the given `managedFields`.
+    async fn seeded_config_maps(
+        data: serde_json::Value,
+        entries: Vec<serde_json::Value>,
+    ) -> kube::Api<ConfigMap> {
+        let mut seeded = config_map_manifest(data);
+        seeded["metadata"]["managedFields"] = json!(entries);
+        let client = ClientBuilder::new()
+            .with_runtime_objects(vec![seeded])
+            .build()
+            .await
+            .unwrap();
+        kube::Api::namespaced(client, "default")
+    }
+
+    fn entry_times(config_map: &ConfigMap) -> Vec<String> {
+        let entries = config_map.metadata.managed_fields.clone().unwrap();
+        entries
+            .iter()
+            .map(|entry| serde_json::to_value(entry).unwrap()["time"].to_string())
+            .collect()
+    }
+
+    /// Applying the same manifest again changes nothing, with one manager or with
+    /// two, where the applier's entry moves past the other one.
+    #[tokio::test]
+    async fn test_repeated_apply_is_a_noop() {
+        let only_a = config_map_manifest(json!({ "a": "1" }));
+        let only_b = config_map_manifest(json!({ "b": "2" }));
+        let seeds = [
+            (json!({ "a": "1" }), vec![seeded_entry("a", &only_a)]),
+            (
+                json!({ "a": "1", "b": "2" }),
+                vec![seeded_entry("a", &only_a), seeded_entry("b", &only_b)],
+            ),
+        ];
+
+        for (data, entries) in seeds {
+            let config_maps = seeded_config_maps(data, entries).await;
+            let seeded = config_maps.get("applied").await.unwrap();
+
+            let applied = config_maps
+                .patch("applied", &PatchParams::apply("a"), &Patch::Apply(&only_a))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                applied.metadata.resource_version,
+                seeded.metadata.resource_version
+            );
+            assert_eq!(entry_times(&applied), entry_times(&seeded));
+        }
+    }
+
+    /// An apply that changes a value is a real write and takes a new timestamp.
+    #[tokio::test]
+    async fn test_apply_that_changes_a_value_is_written() {
+        let manifest = config_map_manifest(json!({ "a": "1" }));
+        let config_maps =
+            seeded_config_maps(json!({ "a": "1" }), vec![seeded_entry("a", &manifest)]).await;
+        let seeded = config_maps.get("applied").await.unwrap();
+
+        let applied = config_maps
+            .patch(
+                "applied",
+                &PatchParams::apply("a"),
+                &Patch::Apply(&config_map_manifest(json!({ "a": "2" }))),
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(
+            applied.metadata.resource_version,
+            seeded.metadata.resource_version
+        );
+        assert_ne!(entry_times(&applied), entry_times(&seeded));
+    }
+
+    /// A client that doesn't know about `managedFields` can't remove them.
+    #[tokio::test]
+    async fn test_replace_without_managed_fields_keeps_them() {
+        let manifest = config_map_manifest(json!({ "a": "1" }));
+        let config_maps =
+            seeded_config_maps(json!({ "a": "1" }), vec![seeded_entry("a", &manifest)]).await;
+        let seeded = config_maps.get("applied").await.unwrap();
+
+        let mut update = seeded.clone();
+        update.metadata.managed_fields = None;
+        update.data = Some([("a".to_string(), "2".to_string())].into());
+        let replaced = config_maps
+            .replace("applied", &PostParams::default(), &update)
+            .await
+            .unwrap();
+
+        assert_ne!(
+            replaced.metadata.resource_version,
+            seeded.metadata.resource_version
+        );
+        assert_eq!(
+            replaced.metadata.managed_fields,
+            seeded.metadata.managed_fields
+        );
+    }
+
+    /// A status write can't change `managedFields`, whatever the request sends.
+    #[tokio::test]
+    async fn test_status_writes_ignore_managed_fields() {
+        let manifest = json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "web", "namespace": "default" },
+        });
+        let mut seeded = manifest.clone();
+        seeded["metadata"]["labels"] = json!({ "app": "web" });
+        seeded["metadata"]["managedFields"] = json!([seeded_entry("a", &seeded)]);
+        let client = ClientBuilder::new()
+            .with_runtime_objects(vec![seeded])
+            .build()
+            .await
+            .unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let expected = pods.get("web").await.unwrap().metadata.managed_fields;
+        assert!(expected.is_some());
+
+        let requests = [
+            json!(null),
+            json!([]),
+            json!([{ "manager": "other", "operation": "Update" }]),
+        ];
+        for (phase, managed_fields) in ["Running", "Pending", "Failed"].iter().zip(requests) {
+            let mut body = manifest.clone();
+            body["metadata"]["managedFields"] = managed_fields.clone();
+            body["status"] = json!({ "phase": phase });
+            let request = http::Request::put("/api/v1/namespaces/default/pods/web/status")
+                .header("content-type", "application/json")
+                .body(serde_json::to_vec(&body).unwrap())
+                .unwrap();
+            let replaced: Pod = client.request(request).await.unwrap();
+            assert_eq!(replaced.metadata.managed_fields, expected);
+
+            let patch = json!({
+                "metadata": { "managedFields": managed_fields },
+                "status": { "phase": "Succeeded" },
+            });
+            let patched = pods
+                .patch_status("web", &PatchParams::default(), &Patch::Merge(&patch))
+                .await
+                .unwrap();
+            assert_eq!(patched.metadata.managed_fields, expected);
+        }
+    }
+
+    /// An empty list or a single empty entry clears `managedFields`.
+    #[tokio::test]
+    async fn test_replace_can_reset_managed_fields() {
+        let manifest = config_map_manifest(json!({ "a": "1" }));
+        for reset in [vec![], vec![ManagedFieldsEntry::default()]] {
+            let config_maps =
+                seeded_config_maps(json!({ "a": "1" }), vec![seeded_entry("a", &manifest)]).await;
+            let seeded = config_maps.get("applied").await.unwrap();
+
+            let mut update = seeded.clone();
+            update.metadata.managed_fields = Some(reset);
+            let replaced = config_maps
+                .replace("applied", &PostParams::default(), &update)
+                .await
+                .unwrap();
+
+            assert_ne!(
+                replaced.metadata.resource_version,
+                seeded.metadata.resource_version
+            );
+            assert_eq!(replaced.metadata.managed_fields, None);
+        }
     }
 
     /// The scale subresource round-trips through a Deployment.
@@ -3771,16 +4061,15 @@ mod tests {
         let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
         let mut pod = Pod::default();
         pod.metadata.name = Some("status".to_string());
-        let created = pods.create(&PostParams::default(), &pod).await.unwrap();
+        pods.create(&PostParams::default(), &pod).await.unwrap();
 
-        let patched = pods
-            .patch(
-                "status",
-                &PatchParams::default(),
-                &Patch::Merge(&json!({"metadata": {"labels": {"patched": "yes"}}})),
-            )
-            .await
-            .unwrap();
+        pods.patch(
+            "status",
+            &PatchParams::default(),
+            &Patch::Merge(&json!({"metadata": {"labels": {"patched": "yes"}}})),
+        )
+        .await
+        .unwrap();
 
         let fetched = pods.get("status").await.unwrap();
         assert_eq!(
@@ -3793,7 +4082,5 @@ mod tests {
                 .map(String::as_str),
             Some("yes")
         );
-        assert_eq!(created.metadata.generation, Some(1));
-        assert_eq!(patched.metadata.generation, Some(2));
     }
 }

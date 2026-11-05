@@ -1,3 +1,4 @@
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ManagedFieldsEntry;
 use serde_json::{Map, Value};
 
 use crate::error::Error;
@@ -92,6 +93,43 @@ pub(crate) fn apply_field_ownership(
     obj["metadata"]["managedFields"] = Value::Array(updated_entries);
 
     Ok(())
+}
+
+/// Returns whether an update's `entries` ask to clear the stored ones, which
+/// kube-apiserver's field manager accepts as an empty list or one empty entry.
+pub(crate) fn is_reset(entries: &[ManagedFieldsEntry]) -> bool {
+    match entries {
+        [] => true,
+        [entry] => *entry == ManagedFieldsEntry::default(),
+        _ => false,
+    }
+}
+
+/// Returns whether `new` is `stored` apart from the time and order of its
+/// managed fields. `apply_field_ownership` stamps the time and moves the
+/// applier's entry last on every apply, so neither shows that anything changed.
+pub(crate) fn unchanged(new: &Value, stored: &Value) -> bool {
+    comparable_entries(new) == comparable_entries(stored)
+        && without_managed_fields(new) == without_managed_fields(stored)
+}
+
+fn comparable_entries(obj: &Value) -> Vec<Value> {
+    let mut entries = read_managed_fields(obj);
+    for entry in &mut entries {
+        if let Some(fields) = entry.as_object_mut() {
+            fields.remove("time");
+        }
+    }
+    entries.sort_by_key(Value::to_string);
+    entries
+}
+
+fn without_managed_fields(obj: &Value) -> Value {
+    let mut obj = obj.clone();
+    if let Some(metadata) = obj.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("managedFields");
+    }
+    obj
 }
 
 /// Read the existing `metadata.managedFields` array from an object.
