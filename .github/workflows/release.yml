@@ -82,4 +82,3 @@ jobs:
 
       - name: publish to crates.io
         run: cargo publish --token ${{ secrets.CARGO_TOKEN }}
-        continue-on-error: true
