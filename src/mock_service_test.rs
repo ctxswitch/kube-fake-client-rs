@@ -7,10 +7,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::ClientBuilder;
-    use k8s_openapi::api::core::v1::{Namespace, Node, Pod};
+    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::batch::v1::Job;
+    use k8s_openapi::api::core::v1::{Namespace, Node, Pod, ReplicationController};
     use k8s_openapi::api::rbac::v1::ClusterRole;
-    use kube::api::{DeleteParams, EvictParams, LogParams, Patch, PatchParams, PostParams};
+    use kube::api::{
+        DeleteParams, EvictParams, ListParams, LogParams, Patch, PatchParams, PostParams,
+    };
+    use kube::core::NamespaceResourceScope;
+    use kube::Resource;
+    use serde::de::DeserializeOwned;
+    use serde::Serialize;
     use serde_json::json;
+    use std::fmt::Debug;
 
     // ============================================================================
     // Patch Type Tests
@@ -2093,6 +2102,472 @@ mod tests {
         // Child should still exist because orphan does not cascade
         let child_result = pods.get("child-pod").await;
         assert!(child_result.is_ok(), "child should survive orphan delete");
+    }
+
+    fn pod_named(name: &str, finalizers: &[&str]) -> Pod {
+        let mut pod = Pod::default();
+        pod.metadata.name = Some(name.to_string());
+        if !finalizers.is_empty() {
+            pod.metadata.finalizers = Some(finalizers.iter().map(ToString::to_string).collect());
+        }
+        pod
+    }
+
+    fn owned_by(mut pod: Pod, owners: &[&Pod]) -> Pod {
+        pod.metadata.owner_references = Some(
+            owners
+                .iter()
+                .map(
+                    |owner| k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
+                        api_version: "v1".to_string(),
+                        kind: "Pod".to_string(),
+                        name: owner.metadata.name.clone().unwrap(),
+                        uid: owner.metadata.uid.clone().unwrap(),
+                        ..Default::default()
+                    },
+                )
+                .collect(),
+        );
+        pod
+    }
+
+    async fn create_pod(pods: &kube::Api<Pod>, pod: Pod) -> Pod {
+        pods.create(&PostParams::default(), &pod).await.unwrap()
+    }
+
+    async fn set_finalizers(pods: &kube::Api<Pod>, name: &str, finalizers: serde_json::Value) {
+        pods.patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(json!({ "metadata": { "finalizers": finalizers } })),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Creates `owner` with `finalizers` and a `child` it owns.
+    async fn owner_and_child(finalizers: &[&str]) -> (kube::Client, kube::Api<Pod>) {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let owner = create_pod(&pods, pod_named("owner", finalizers)).await;
+        create_pod(&pods, owned_by(pod_named("child", &[]), &[&owner])).await;
+        (client, pods)
+    }
+
+    fn has_owner_references(pod: &Pod) -> bool {
+        pod.metadata.owner_references.is_some()
+    }
+
+    /// Orphaning does not wait for finalizers, and removing them later leaves the child.
+    #[tokio::test]
+    async fn test_orphan_delete_with_finalizers_keeps_dependents() {
+        let (_, pods) = owner_and_child(&["example.com/a", "example.com/b"]).await;
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        let owner = pods.get("owner").await.unwrap();
+        assert!(owner.metadata.deletion_timestamp.is_some());
+        assert_eq!(
+            owner.metadata.finalizers,
+            Some(vec![
+                "example.com/a".to_string(),
+                "example.com/b".to_string()
+            ])
+        );
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+
+        set_finalizers(&pods, "owner", json!(["example.com/b"])).await;
+        assert!(pods.get("owner").await.is_ok());
+
+        set_finalizers(&pods, "owner", json!(null)).await;
+        assert!(pods.get("owner").await.is_err());
+        assert!(pods.get("child").await.is_ok());
+    }
+
+    /// Orphaning removes only the deleted owner's entry.
+    #[tokio::test]
+    async fn test_orphan_delete_keeps_other_owners() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let owner = create_pod(&pods, pod_named("owner", &[])).await;
+        let other = create_pod(&pods, pod_named("other", &[])).await;
+        create_pod(&pods, owned_by(pod_named("child", &[]), &[&owner, &other])).await;
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        let references = pods.get("child").await.unwrap().metadata.owner_references;
+        let uids: Vec<_> = references.into_iter().flatten().map(|r| r.uid).collect();
+        assert_eq!(uids, vec![other.metadata.uid.unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn test_orphan_delete_without_finalizers_removes_owner_reference() {
+        let (_, pods) = owner_and_child(&[]).await;
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        assert!(pods.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_orphan_dependents_option_orphans() {
+        let (client, pods) = owner_and_child(&["example.com/a"]).await;
+
+        let body = serde_json::to_vec(&json!({ "orphanDependents": true })).unwrap();
+        let req = http::Request::delete("/api/v1/namespaces/default/pods/owner")
+            .header("Content-Type", "application/json")
+            .body(body)
+            .unwrap();
+        client.request_text(req).await.unwrap();
+
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// The response is the object before the garbage collector clears `orphan`.
+    #[tokio::test]
+    async fn test_orphan_delete_response_carries_orphan_finalizer() {
+        for (finalizers, expected) in [
+            (vec![], vec!["orphan"]),
+            (vec!["example.com/a"], vec!["example.com/a", "orphan"]),
+        ] {
+            let (_, pods) = owner_and_child(&finalizers).await;
+
+            let deleted = pods
+                .delete("owner", &DeleteParams::orphan())
+                .await
+                .unwrap()
+                .left()
+                .unwrap();
+
+            assert!(deleted.metadata.deletion_timestamp.is_some());
+            assert_eq!(deleted.metadata.finalizers.unwrap(), expected);
+        }
+    }
+
+    /// A stale copy of the response cannot be written back over the cleared `orphan`.
+    #[tokio::test]
+    async fn test_orphan_delete_response_is_older_than_stored_object() {
+        let (_, pods) = owner_and_child(&["example.com/a"]).await;
+
+        let deleted = pods
+            .delete("owner", &DeleteParams::orphan())
+            .await
+            .unwrap()
+            .left()
+            .unwrap();
+
+        let stored = pods.get("owner").await.unwrap();
+        assert_ne!(
+            deleted.metadata.resource_version,
+            stored.metadata.resource_version
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_of_object_carrying_orphan_finalizer_orphans() {
+        let (_, pods) = owner_and_child(&["orphan"]).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// An explicit policy overrides the `orphan` finalizer and removes it.
+    #[tokio::test]
+    async fn test_background_delete_removes_orphan_finalizer() {
+        let (_, pods) = owner_and_child(&["orphan", "example.com/a"]).await;
+
+        pods.delete("owner", &DeleteParams::background())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            pods.get("owner").await.unwrap().metadata.finalizers,
+            Some(vec!["example.com/a".to_string()])
+        );
+
+        set_finalizers(&pods, "owner", json!(null)).await;
+        assert!(pods.get("child").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_repeat_orphan_delete_orphans_terminating_object() {
+        let (_, pods) = owner_and_child(&["example.com/a"]).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+        let terminating = pods.get("owner").await.unwrap();
+        assert!(has_owner_references(&pods.get("child").await.unwrap()));
+
+        pods.delete("owner", &DeleteParams::orphan()).await.unwrap();
+
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+        assert_eq!(
+            pods.get("owner").await.unwrap().metadata.deletion_timestamp,
+            terminating.metadata.deletion_timestamp
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_with_finalizers_cascades_once_finalizers_are_removed() {
+        for params in [DeleteParams::default(), DeleteParams::background()] {
+            let (_, pods) = owner_and_child(&["example.com/a"]).await;
+
+            pods.delete("owner", &params).await.unwrap();
+            assert!(pods.get("child").await.is_ok());
+
+            set_finalizers(&pods, "owner", json!(null)).await;
+            assert!(pods.get("child").await.is_err());
+        }
+    }
+
+    /// The garbage collector deletes a dependent carrying `orphan` with `Orphan`.
+    #[tokio::test]
+    async fn test_cascade_honors_orphan_finalizer_on_dependent() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "default");
+        let owner = create_pod(&pods, pod_named("owner", &[])).await;
+        let held_owner = create_pod(&pods, pod_named("held-owner", &[])).await;
+
+        let middle = owned_by(pod_named("middle", &["orphan"]), &[&owner]);
+        let middle = create_pod(&pods, middle).await;
+        create_pod(&pods, owned_by(pod_named("child", &[]), &[&middle])).await;
+
+        let held = owned_by(
+            pod_named("held", &["orphan", "example.com/a"]),
+            &[&held_owner],
+        );
+        let held = create_pod(&pods, held).await;
+        create_pod(&pods, owned_by(pod_named("held-child", &[]), &[&held])).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+        pods.delete("held-owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("middle").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+
+        let held = pods.get("held").await.unwrap();
+        assert!(held.metadata.deletion_timestamp.is_some());
+        assert_eq!(
+            held.metadata.finalizers,
+            Some(vec!["example.com/a".to_string()])
+        );
+        assert!(!has_owner_references(
+            &pods.get("held-child").await.unwrap()
+        ));
+    }
+
+    /// The namespace controller deletes contents with an explicit `Background`.
+    #[tokio::test]
+    async fn test_namespace_delete_does_not_orphan_contents() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
+        let mut namespace = Namespace::default();
+        namespace.metadata.name = Some("team-a".to_string());
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, "team-a");
+        let owner = create_pod(&pods, pod_named("owner", &["orphan"])).await;
+        let child = owned_by(pod_named("child", &["example.com/a"]), &[&owner]);
+        create_pod(&pods, child).await;
+
+        namespaces
+            .delete("team-a", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("owner").await.is_err());
+        assert!(has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// Creates a `K` named `owner` and a Pod named `child` it owns.
+    async fn resource_and_child<K>(namespace: &str) -> (kube::Api<K>, kube::Api<Pod>, K)
+    where
+        K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+            + Clone
+            + Debug
+            + Default
+            + DeserializeOwned
+            + Serialize,
+    {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let owners: kube::Api<K> = kube::Api::namespaced(client.clone(), namespace);
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client, namespace);
+
+        let mut owner = K::default();
+        owner.meta_mut().name = Some("owner".to_string());
+        let owner = owners.create(&PostParams::default(), &owner).await.unwrap();
+
+        let mut child = pod_named("child", &[]);
+        child.metadata.owner_references = Some(vec![owner.owner_ref(&()).unwrap()]);
+        create_pod(&pods, child).await;
+        (owners, pods, owner)
+    }
+
+    async fn assert_delete_orphans_by_default<K>()
+    where
+        K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+            + Clone
+            + Debug
+            + Default
+            + DeserializeOwned
+            + Serialize,
+    {
+        let (owners, pods, _) = resource_and_child::<K>("default").await;
+        owners
+            .delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+        assert!(owners.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+
+        let (owners, pods, _) = resource_and_child::<K>("default").await;
+        owners
+            .delete_collection(&DeleteParams::default(), &ListParams::default())
+            .await
+            .unwrap();
+        assert!(owners.get("owner").await.is_err());
+        assert!(!has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    async fn assert_explicit_policy_cascades<K>()
+    where
+        K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+            + Clone
+            + Debug
+            + Default
+            + DeserializeOwned
+            + Serialize,
+    {
+        for params in [DeleteParams::background(), DeleteParams::foreground()] {
+            let (owners, pods, _) = resource_and_child::<K>("default").await;
+            owners.delete("owner", &params).await.unwrap();
+            assert!(pods.get("child").await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_job_and_replication_controller_orphan_by_default() {
+        assert_delete_orphans_by_default::<Job>().await;
+        assert_delete_orphans_by_default::<ReplicationController>().await;
+    }
+
+    #[tokio::test]
+    async fn test_job_and_replication_controller_cascade_with_explicit_policy() {
+        assert_explicit_policy_cascades::<Job>().await;
+        assert_explicit_policy_cascades::<ReplicationController>().await;
+    }
+
+    #[tokio::test]
+    async fn test_deployment_cascades_by_default() {
+        let (owners, pods, _) = resource_and_child::<Deployment>("default").await;
+
+        owners
+            .delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(pods.get("child").await.is_err());
+    }
+
+    /// The garbage collector deletes dependents with `Background`, not the kind's default.
+    #[tokio::test]
+    async fn test_cascade_reaching_job_removes_its_dependents() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "default");
+        let jobs: kube::Api<Job> = kube::Api::namespaced(client, "default");
+
+        let owner = create_pod(&pods, pod_named("owner", &[])).await;
+        let mut job = Job::default();
+        job.metadata.name = Some("job".to_string());
+        job.metadata.owner_references = Some(vec![owner.owner_ref(&()).unwrap()]);
+        let job = jobs.create(&PostParams::default(), &job).await.unwrap();
+        let mut child = pod_named("child", &[]);
+        child.metadata.owner_references = Some(vec![job.owner_ref(&()).unwrap()]);
+        create_pod(&pods, child).await;
+
+        let mut held = Job::default();
+        held.metadata.name = Some("held".to_string());
+        held.metadata.finalizers = Some(vec!["example.com/a".to_string()]);
+        held.metadata.owner_references = Some(vec![owner.owner_ref(&()).unwrap()]);
+        let held = jobs.create(&PostParams::default(), &held).await.unwrap();
+        let mut held_child = pod_named("held-child", &[]);
+        held_child.metadata.owner_references = Some(vec![held.owner_ref(&()).unwrap()]);
+        create_pod(&pods, held_child).await;
+
+        pods.delete("owner", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(jobs.get("job").await.is_err());
+        assert!(pods.get("child").await.is_err());
+        assert!(has_owner_references(&pods.get("held-child").await.unwrap()));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_delete_does_not_orphan_job_dependents() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let namespaces: kube::Api<Namespace> = kube::Api::all(client.clone());
+        let mut namespace = Namespace::default();
+        namespace.metadata.name = Some("team-a".to_string());
+        namespaces
+            .create(&PostParams::default(), &namespace)
+            .await
+            .unwrap();
+
+        let pods: kube::Api<Pod> = kube::Api::namespaced(client.clone(), "team-a");
+        let jobs: kube::Api<Job> = kube::Api::namespaced(client, "team-a");
+        let mut job = Job::default();
+        job.metadata.name = Some("job".to_string());
+        let job = jobs.create(&PostParams::default(), &job).await.unwrap();
+        let mut child = pod_named("child", &["example.com/a"]);
+        child.metadata.owner_references = Some(vec![job.owner_ref(&()).unwrap()]);
+        create_pod(&pods, child).await;
+
+        namespaces
+            .delete("team-a", &DeleteParams::default())
+            .await
+            .unwrap();
+
+        assert!(jobs.get("job").await.is_err());
+        assert!(has_owner_references(&pods.get("child").await.unwrap()));
+    }
+
+    /// The default applies again on each delete, so `orphan` is added and cleared again.
+    #[tokio::test]
+    async fn test_repeat_delete_of_held_job_changes_resource_version() {
+        let client = ClientBuilder::new().build().await.unwrap();
+        let jobs: kube::Api<Job> = kube::Api::namespaced(client, "default");
+        let mut job = Job::default();
+        job.metadata.name = Some("job".to_string());
+        job.metadata.finalizers = Some(vec!["example.com/a".to_string()]);
+        jobs.create(&PostParams::default(), &job).await.unwrap();
+
+        jobs.delete("job", &DeleteParams::default()).await.unwrap();
+        let first = jobs.get("job").await.unwrap();
+        jobs.delete("job", &DeleteParams::default()).await.unwrap();
+        let second = jobs.get("job").await.unwrap();
+
+        assert_eq!(
+            first.metadata.deletion_timestamp,
+            second.metadata.deletion_timestamp
+        );
+        assert_ne!(
+            first.metadata.resource_version,
+            second.metadata.resource_version
+        );
     }
 
     /// Delete with `DeleteParams::background()` should cascade to children.

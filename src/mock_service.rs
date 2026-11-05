@@ -9,7 +9,7 @@ use crate::interceptor;
 use crate::label_selector;
 use crate::managed_fields::apply_field_ownership;
 use crate::scale;
-use crate::tracker::{GVK, GVR};
+use crate::tracker::{DeletePropagation, GVK, GVR};
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt};
 use http::{Request, Response, StatusCode};
@@ -1173,13 +1173,12 @@ impl MockService {
             );
         }
 
-        let cascade = if let Some(ref policy) = propagation_policy {
-            policy != "Orphan"
-        } else if let Some(orphan) = orphan_dependents {
-            !orphan
-        } else {
-            true
+        let propagation = match (propagation_policy.as_deref(), orphan_dependents) {
+            (Some("Orphan"), _) | (_, Some(true)) => DeletePropagation::Orphan,
+            (Some(_), _) | (_, Some(false)) => DeletePropagation::Cascade,
+            (None, None) => DeletePropagation::Unspecified,
         };
+        let cascade = propagation != DeletePropagation::Orphan;
 
         if let Some(name) = parsed.name {
             // Single object deletion
@@ -1195,24 +1194,28 @@ impl MockService {
                     match delete_interceptor(ctx) {
                         Ok(Some(result)) => result,
                         Ok(None) => {
-                            handle_error!(self
-                                .client
-                                .tracker()
-                                .delete(&gvr, &namespace, &name, cascade))
+                            handle_error!(self.client.tracker().delete(
+                                &gvr,
+                                &namespace,
+                                &name,
+                                propagation
+                            ))
                         }
                         Err(e) => return Self::error_to_response(e),
                     }
                 } else {
-                    handle_error!(self
-                        .client
-                        .tracker()
-                        .delete(&gvr, &namespace, &name, cascade))
+                    handle_error!(self.client.tracker().delete(
+                        &gvr,
+                        &namespace,
+                        &name,
+                        propagation
+                    ))
                 }
             } else {
                 handle_error!(self
                     .client
                     .tracker()
-                    .delete(&gvr, &namespace, &name, cascade))
+                    .delete(&gvr, &namespace, &name, propagation))
             };
 
             Self::success_response(deleted)
@@ -1240,7 +1243,7 @@ impl MockService {
                 .filter(|obj_name| {
                     self.client
                         .tracker()
-                        .delete(&gvr, &namespace, obj_name, cascade)
+                        .delete(&gvr, &namespace, obj_name, propagation)
                         .is_ok()
                 })
                 .count();
