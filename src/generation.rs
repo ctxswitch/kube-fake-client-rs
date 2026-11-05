@@ -9,9 +9,9 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Built-in kinds whose strategy sets `generation` to 1 on create. Pod depends
-/// on the Kubernetes version, see [`POD_SETS_GENERATION`].
+/// Built-in kinds whose strategy sets `generation` to 1 on create.
 const SETS_ON_CREATE: &[(&str, &str)] = &[
+    ("", "Pod"),
     ("", "PodTemplate"),
     ("", "ReplicationController"),
     ("admissionregistration.k8s.io", "MutatingAdmissionPolicy"),
@@ -52,13 +52,6 @@ const SETS_ON_CREATE: &[(&str, &str)] = &[
     ("scheduling.k8s.io", "PriorityClass"),
 ];
 
-k8s_openapi::k8s_if_ge_1_33! {
-    const POD_SETS_GENERATION: bool = true;
-}
-k8s_openapi::k8s_if_le_1_32! {
-    const POD_SETS_GENERATION: bool = false;
-}
-
 fn is_kind(gvk: &GVK, group: &str, kind: &str) -> bool {
     gvk.group == group && gvk.kind == kind
 }
@@ -66,9 +59,6 @@ fn is_kind(gvk: &GVK, group: &str, kind: &str) -> bool {
 /// Returns whether creating `gvk` sets `generation` to 1. A kind unknown to
 /// discovery is a custom resource, which always does.
 pub(crate) fn sets_on_create(gvk: &GVK) -> bool {
-    if is_kind(gvk, "", "Pod") {
-        return POD_SETS_GENERATION;
-    }
     Discovery::is_namespaced(gvk).is_none()
         || SETS_ON_CREATE
             .iter()

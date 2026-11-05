@@ -11,6 +11,8 @@ use kube_fake_client::ClientBuilder;
 use std::collections::BTreeMap;
 
 /// Create a deployment with the given name, namespace, and replicas
+// `into` fills `spec` on every version, and only v1_37 makes it a no-op.
+#[allow(clippy::useless_conversion)]
 fn create_deployment(name: &str, namespace: &str, replicas: i32, app_label: &str) -> Deployment {
     let labels: BTreeMap<String, String> = [(String::from("app"), String::from(app_label))]
         .iter()
@@ -23,7 +25,7 @@ fn create_deployment(name: &str, namespace: &str, replicas: i32, app_label: &str
             namespace: Some(namespace.to_string()),
             ..Default::default()
         },
-        spec: Some(DeploymentSpec {
+        spec: DeploymentSpec {
             replicas: Some(replicas),
             selector: k8s_openapi::apimachinery::pkg::apis::meta::v1::LabelSelector {
                 match_labels: Some(labels.clone()),
@@ -37,9 +39,15 @@ fn create_deployment(name: &str, namespace: &str, replicas: i32, app_label: &str
                 spec: None,
             },
             ..Default::default()
-        }),
+        }
+        .into(),
         status: None,
     }
+}
+
+/// Reads `spec.replicas`. `spec` is only optional before v1_37.
+fn spec_replicas(spec: impl Into<Option<DeploymentSpec>>) -> Option<i32> {
+    spec.into().and_then(|spec| spec.replicas)
 }
 
 pub struct DeploymentStatusController {
@@ -54,36 +62,17 @@ impl DeploymentStatusController {
     pub async fn reconcile(&self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut deployment = self.api.get(name).await?;
 
-        let desired_replicas = deployment
-            .spec
-            .as_ref()
-            .and_then(|spec| spec.replicas)
-            .unwrap_or(1);
+        let desired_replicas = spec_replicas(deployment.spec.clone()).unwrap_or(1);
 
-        // DeploymentStatus gained `terminating_replicas` in v1_33
-        k8s_openapi::k8s_if_le_1_32! {
-            let status = DeploymentStatus {
-                replicas: Some(desired_replicas),
-                ready_replicas: Some(desired_replicas),
-                available_replicas: Some(desired_replicas),
-                unavailable_replicas: Some(0),
-                updated_replicas: Some(desired_replicas),
-                observed_generation: deployment.metadata.generation,
-                ..Default::default()
-            };
-        }
-        k8s_openapi::k8s_if_ge_1_33! {
-            let status = DeploymentStatus {
-                replicas: Some(desired_replicas),
-                ready_replicas: Some(desired_replicas),
-                available_replicas: Some(desired_replicas),
-                unavailable_replicas: Some(0),
-                updated_replicas: Some(desired_replicas),
-                observed_generation: deployment.metadata.generation,
-                terminating_replicas: None,
-                ..Default::default()
-            };
-        }
+        let status = DeploymentStatus {
+            replicas: Some(desired_replicas),
+            ready_replicas: Some(desired_replicas),
+            available_replicas: Some(desired_replicas),
+            unavailable_replicas: Some(0),
+            updated_replicas: Some(desired_replicas),
+            observed_generation: deployment.metadata.generation,
+            ..Default::default()
+        };
 
         deployment.status = Some(status);
 
@@ -119,10 +108,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  Ready: {}", status.ready_replicas.unwrap_or(0));
     }
 
-    if let Some(spec) = &updated.spec {
-        println!("Deployment spec:");
-        println!("  Desired replicas: {}", spec.replicas.unwrap_or(0));
-    }
+    println!("Deployment spec:");
+    println!(
+        "  Desired replicas: {}",
+        spec_replicas(updated.spec).unwrap_or(0)
+    );
 
     Ok(())
 }

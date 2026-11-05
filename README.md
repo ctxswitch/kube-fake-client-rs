@@ -34,9 +34,9 @@ Add `kube-fake-client` as a development dependency in your `Cargo.toml`:
 
 ```toml
 [dev-dependencies]
-kube-fake-client = "0.3"
-kube = { version = "4.2", features = ["client", "derive"] }
-k8s-openapi = { version = "0.28", features = ["v1_36"] }
+kube-fake-client = "0.4"
+kube = { version = "5.0", features = ["client", "derive"] }
+k8s-openapi = { version = "0.29", features = ["v1_37"] }
 tokio = { version = "1.0", features = ["full"] }
 ```
 
@@ -44,11 +44,11 @@ tokio = { version = "1.0", features = ["full"] }
 
 Your `k8s-openapi` feature selects the Kubernetes version. `kube-fake-client` supports these versions:
 
-- `v1_32` (or `earliest`): Kubernetes 1.32
-- `v1_33`: Kubernetes 1.33
+- `v1_33` (or `earliest`): Kubernetes 1.33
 - `v1_34`: Kubernetes 1.34
 - `v1_35`: Kubernetes 1.35
-- `v1_36` (or `latest`): Kubernetes 1.36
+- `v1_36`: Kubernetes 1.36
+- `v1_37` (or `latest`): Kubernetes 1.37
 
 ### Optional OpenAPI validation
 
@@ -56,7 +56,7 @@ To check resources against their OpenAPI schemas at runtime, enable `validation`
 
 ```toml
 [dev-dependencies]
-kube-fake-client = { version = "0.3", features = ["validation"] }
+kube-fake-client = { version = "0.4", features = ["validation"] }
 ```
 
 ### Other dependencies

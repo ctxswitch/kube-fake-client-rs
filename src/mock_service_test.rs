@@ -7,7 +7,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::ClientBuilder;
-    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, ReplicaSetSpec, StatefulSetSpec};
     use k8s_openapi::api::batch::v1::Job;
     use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Node, Pod, ReplicationController};
     use k8s_openapi::api::rbac::v1::ClusterRole;
@@ -21,6 +21,11 @@ mod tests {
     use serde::Serialize;
     use serde_json::json;
     use std::fmt::Debug;
+
+    /// Returns a `spec`, which some kinds stopped leaving optional in v1_37.
+    fn spec_of<S>(spec: impl Into<Option<S>>) -> S {
+        spec.into().unwrap()
+    }
 
     // ============================================================================
     // Patch Type Tests
@@ -1556,18 +1561,19 @@ mod tests {
     /// A Deployment gets the spec/status split without `with_status_subresource`.
     #[tokio::test]
     async fn test_builtin_status_subresource_needs_no_configuration() {
-        use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, DeploymentStatus};
+        use k8s_openapi::api::apps::v1::DeploymentStatus;
 
         let client = ClientBuilder::new().build().await.unwrap();
         let deployments: kube::Api<Deployment> = kube::Api::namespaced(client, "default");
         let pp = PostParams::default();
 
-        let mut deployment = Deployment::default();
-        deployment.metadata.name = Some("web".to_string());
-        deployment.spec = Some(DeploymentSpec {
-            replicas: Some(1),
-            ..Default::default()
-        });
+        let deployment: Deployment = serde_json::from_value(json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": "web" },
+            "spec": { "replicas": 1 },
+        }))
+        .unwrap();
         deployments.create(&pp, &deployment).await.unwrap();
 
         let mut current = deployments.get("web").await.unwrap();
@@ -1587,7 +1593,7 @@ mod tests {
             .await
             .unwrap();
         let current = deployments.get("web").await.unwrap();
-        assert_eq!(current.spec.and_then(|s| s.replicas), Some(1));
+        assert_eq!(spec_of::<DeploymentSpec>(current.spec).replicas, Some(1));
         assert_eq!(current.status.and_then(|s| s.replicas), Some(1));
     }
 
@@ -1984,9 +1990,12 @@ mod tests {
         assert_eq!(patched.spec.and_then(|s| s.replicas), Some(5));
 
         let parent = deployments.get("web").await.unwrap();
-        let spec = parent.spec.clone().unwrap();
+        let spec = spec_of::<DeploymentSpec>(parent.spec.clone());
         assert_eq!(spec.replicas, Some(5));
-        assert_eq!(spec.template, created.spec.clone().unwrap().template);
+        assert_eq!(
+            spec.template,
+            spec_of::<DeploymentSpec>(created.spec.clone()).template
+        );
         assert_eq!(parent.metadata.labels, created.metadata.labels);
         assert_eq!(parent.status, created.status);
     }
@@ -2031,7 +2040,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            statefulsets.get("db").await.unwrap().spec.unwrap().replicas,
+            spec_of::<StatefulSetSpec>(statefulsets.get("db").await.unwrap().spec).replicas,
             Some(4)
         );
 
@@ -2063,7 +2072,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            replicasets.get("db").await.unwrap().spec.unwrap().replicas,
+            spec_of::<ReplicaSetSpec>(replicasets.get("db").await.unwrap().spec).replicas,
             Some(0)
         );
     }
@@ -2126,7 +2135,7 @@ mod tests {
         );
 
         assert_eq!(
-            deployments.get("web").await.unwrap().spec.unwrap().replicas,
+            spec_of::<DeploymentSpec>(deployments.get("web").await.unwrap().spec).replicas,
             Some(2)
         );
     }
