@@ -430,9 +430,12 @@ impl MockService {
                 }
 
                 let gvk = extract_gvk(&existing).map_err(|e| Error::Internal(e.to_string()))?;
-                self.client
-                    .tracker()
-                    .update(gvr, &gvk, existing, namespace, is_status)
+                let tracker = self.client.tracker();
+                if is_status && patch_type == PatchType::ApplyPatch {
+                    tracker.update_applied_status(gvr, &gvk, existing, namespace)
+                } else {
+                    tracker.update(gvr, &gvk, existing, namespace, is_status)
+                }
             }
             Err(Error::NotFound { .. }) if patch_type == PatchType::ApplyPatch && !is_status => {
                 let mut obj = patch.clone();

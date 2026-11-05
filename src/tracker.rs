@@ -1,4 +1,6 @@
 use crate::discovery::Discovery;
+use crate::generation;
+use crate::managed_fields;
 use crate::registry::ResourceRegistry;
 use crate::scale::ScaleSubresource;
 use crate::utils::{
@@ -285,6 +287,9 @@ impl ObjectTracker {
         }
 
         ensure_metadata(&mut meta, namespace);
+        if meta.generation.is_none() && generation::sets_on_create(gvk) {
+            meta.generation = Some(1);
+        }
         object["metadata"] = serde_json::to_value(&meta)?;
 
         let stored = StoredObject {
@@ -345,6 +350,15 @@ impl ObjectTracker {
             ));
         }
 
+        if generation::sets_on_create(gvk) {
+            meta.generation = Some(1);
+        } else if let Some(negative) = meta.generation.filter(|g| *g < 0) {
+            return Err(Error::InvalidRequest(format!(
+                "{} \"{name}\" is invalid: metadata.generation: Invalid value: {negative}: must be greater than or equal to 0",
+                gvk.kind
+            )));
+        }
+
         // Check if object already exists
         if self.get(gvr, namespace, &name).is_ok() {
             return Err(Error::AlreadyExists {
@@ -400,9 +414,33 @@ impl ObjectTracker {
         &self,
         gvr: &GVR,
         gvk: &GVK,
+        object: Value,
+        namespace: &str,
+        is_status: bool,
+    ) -> Result<Value> {
+        self.store_update(gvr, gvk, object, namespace, is_status, false)
+    }
+
+    /// Updates status from a server-side apply, the one status write whose
+    /// `managedFields` count: it recorded them on `object`.
+    pub(crate) fn update_applied_status(
+        &self,
+        gvr: &GVR,
+        gvk: &GVK,
+        object: Value,
+        namespace: &str,
+    ) -> Result<Value> {
+        self.store_update(gvr, gvk, object, namespace, true, true)
+    }
+
+    fn store_update(
+        &self,
+        gvr: &GVR,
+        gvk: &GVK,
         mut object: Value,
         namespace: &str,
         is_status: bool,
+        is_status_apply: bool,
     ) -> Result<Value> {
         trace!("Updating object: {:?} in namespace: {}", gvr, namespace);
 
@@ -426,13 +464,13 @@ impl ObjectTracker {
         // Split spec and status as controller-runtime's fake client does
         if self.has_status_subresource(gvk) {
             if is_status {
-                // A status update changes only status. The managed fields an
-                // apply recorded on the request are kept with it; a request
-                // without them keeps the stored ones.
+                // A status update changes only status: kube-apiserver ignores
+                // `managedFields` on a subresource request.
                 let mut stored = existing.clone();
                 copy_status_from(&object, &mut stored);
-                if let Some(managed) = object["metadata"].get("managedFields") {
-                    stored["metadata"]["managedFields"] = managed.clone();
+                if is_status_apply {
+                    stored["metadata"]["managedFields"] =
+                        object["metadata"]["managedFields"].clone();
                 }
                 object = stored;
             } else {
@@ -441,15 +479,27 @@ impl ObjectTracker {
         }
 
         let mut new_meta = self.extract_metadata(&object)?;
-        new_meta.resource_version = Some(self.next_resource_version());
+        let bumps_generation = !is_status
+            && generation::bumps_on_update(gvk, &existing, &existing_meta, &object, &new_meta);
+        if !is_status {
+            new_meta.managed_fields = match new_meta.managed_fields.take() {
+                None => existing_meta.managed_fields,
+                Some(entries) if managed_fields::is_reset(&entries) => None,
+                entries => entries,
+            };
+        }
+        new_meta.resource_version = existing_meta.resource_version;
         new_meta.uid = existing_meta.uid;
         new_meta.creation_timestamp = existing_meta.creation_timestamp;
+        new_meta.namespace = new_meta.namespace.or(existing_meta.namespace);
+        new_meta.deletion_grace_period_seconds = new_meta
+            .deletion_grace_period_seconds
+            .or(existing_meta.deletion_grace_period_seconds);
 
-        // Increment generation for spec changes, not for status-only updates
-        new_meta.generation = if is_status {
-            existing_meta.generation
-        } else {
+        new_meta.generation = if bumps_generation {
             Some(increment_generation(existing_meta.generation))
+        } else {
+            existing_meta.generation
         };
 
         // Validate deletion timestamp immutability
@@ -479,6 +529,14 @@ impl ObjectTracker {
             }
         }
 
+        object["metadata"] = serde_json::to_value(&new_meta)?;
+
+        // Like kube-apiserver's storage layer, skip a write that changes nothing.
+        if managed_fields::unchanged(&object, &existing) {
+            return Ok(existing);
+        }
+
+        new_meta.resource_version = Some(self.next_resource_version());
         object["metadata"] = serde_json::to_value(&new_meta)?;
 
         // The last finalizer was removed. The stored copy still carries the old

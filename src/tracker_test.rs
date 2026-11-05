@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::discovery::Discovery;
     use crate::tracker::*;
     use serde_json::json;
 
@@ -16,6 +17,27 @@ mod tests {
                     "name": "test",
                     "image": "nginx"
                 }]
+            }
+        })
+    }
+
+    fn deployments() -> (GVR, GVK) {
+        (
+            GVR::new("apps", "v1", "deployments"),
+            GVK::new("apps", "v1", "Deployment"),
+        )
+    }
+
+    fn create_test_deployment(name: &str, namespace: &str) -> serde_json::Value {
+        json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+            },
+            "spec": {
+                "replicas": 1
             }
         })
     }
@@ -220,9 +242,8 @@ mod tests {
     #[test]
     fn test_generation_initialized_on_create() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
-        let obj = create_test_object("test-pod", "default");
+        let (gvr, gvk) = deployments();
+        let obj = create_test_deployment("test-deployment", "default");
 
         let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
         assert_eq!(created["metadata"]["generation"], 1);
@@ -231,16 +252,15 @@ mod tests {
     #[test]
     fn test_generation_increments_on_spec_update() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
-        let obj = create_test_object("test-pod", "default");
+        let (gvr, gvk) = deployments();
+        let obj = create_test_deployment("test-deployment", "default");
 
         let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
         assert_eq!(created["metadata"]["generation"], 1);
 
-        let mut updated_obj = create_test_object("test-pod", "default");
+        let mut updated_obj = create_test_deployment("test-deployment", "default");
         updated_obj["metadata"]["resourceVersion"] = json!("1");
-        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:latest");
+        updated_obj["spec"]["replicas"] = json!(2);
 
         let updated = tracker
             .update(&gvr, &gvk, updated_obj, "default", false)
@@ -251,17 +271,15 @@ mod tests {
     #[test]
     fn test_generation_not_incremented_on_status_update() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
-        tracker.add_status_subresource(gvk.clone());
+        let (gvr, gvk) = deployments();
 
-        let obj = create_test_object("test-pod", "default");
+        let obj = create_test_deployment("test-deployment", "default");
         let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
         assert_eq!(created["metadata"]["generation"], 1);
 
-        let mut status_update = create_test_object("test-pod", "default");
+        let mut status_update = create_test_deployment("test-deployment", "default");
         status_update["metadata"]["resourceVersion"] = json!("1");
-        status_update["status"] = json!({"phase": "Running"});
+        status_update["status"] = json!({"replicas": 1});
 
         let updated = tracker
             .update(&gvr, &gvk, status_update, "default", true)
@@ -272,30 +290,343 @@ mod tests {
     #[test]
     fn test_generation_multiple_increments() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
-        let obj = create_test_object("test-pod", "default");
+        let (gvr, gvk) = deployments();
+        let obj = create_test_deployment("test-deployment", "default");
 
         let created = tracker.create(&gvr, &gvk, obj, "default").unwrap();
         assert_eq!(created["metadata"]["generation"], 1);
 
         // First spec update
-        let mut updated_obj = create_test_object("test-pod", "default");
+        let mut updated_obj = create_test_deployment("test-deployment", "default");
         updated_obj["metadata"]["resourceVersion"] = json!("1");
-        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:1.19");
+        updated_obj["spec"]["replicas"] = json!(2);
         let updated = tracker
             .update(&gvr, &gvk, updated_obj, "default", false)
             .unwrap();
         assert_eq!(updated["metadata"]["generation"], 2);
 
         // Second spec update
-        let mut updated_obj = create_test_object("test-pod", "default");
+        let mut updated_obj = create_test_deployment("test-deployment", "default");
         updated_obj["metadata"]["resourceVersion"] = json!("2");
-        updated_obj["spec"]["containers"][0]["image"] = json!("nginx:1.20");
+        updated_obj["spec"]["replicas"] = json!(3);
         let updated = tracker
             .update(&gvr, &gvk, updated_obj, "default", false)
             .unwrap();
         assert_eq!(updated["metadata"]["generation"], 3);
+    }
+
+    /// Creates an object, merges `change` into it, and returns `generation`
+    /// after each step.
+    fn generation_after(
+        gvr: &GVR,
+        gvk: &GVK,
+        namespace: &str,
+        object: serde_json::Value,
+        change: serde_json::Value,
+    ) -> (Option<i64>, Option<i64>) {
+        let tracker = ObjectTracker::default();
+        let created = tracker.create(gvr, gvk, object, namespace).unwrap();
+        let mut changed = created.clone();
+        json_patch::merge(&mut changed, &change);
+        let updated = tracker.update(gvr, gvk, changed, namespace, false).unwrap();
+        (
+            created["metadata"]["generation"].as_i64(),
+            updated["metadata"]["generation"].as_i64(),
+        )
+    }
+
+    #[test]
+    fn test_generation_follows_each_kinds_rules() {
+        k8s_openapi::k8s_if_ge_1_33! {
+            let pod_spec_change = (Some(1), Some(2));
+        }
+        k8s_openapi::k8s_if_le_1_32! {
+            let pod_spec_change = (None, None);
+        }
+        let unchanged = (Some(1), Some(1));
+        let bumped = (Some(1), Some(2));
+        let unset = (None, None);
+
+        let cases = [
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"spec": {"replicas": 2}}),
+                bumped,
+            ),
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"status": {"replicas": 2}}),
+                unchanged,
+            ),
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"metadata": {"labels": {"a": "b"}}}),
+                unchanged,
+            ),
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"metadata": {"finalizers": ["example.com/f"]}}),
+                unchanged,
+            ),
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"metadata": {"ownerReferences": [{"apiVersion": "v1", "kind": "ConfigMap", "name": "o", "uid": "u"}]}}),
+                unchanged,
+            ),
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"metadata": {"annotations": {"a": "b"}}}),
+                bumped,
+            ),
+            (
+                "apps",
+                "v1",
+                "deployments",
+                "Deployment",
+                json!({"metadata": {"annotations": {}}}),
+                unchanged,
+            ),
+            (
+                "apps",
+                "v1",
+                "replicasets",
+                "ReplicaSet",
+                json!({"metadata": {"annotations": {"a": "b"}}}),
+                unchanged,
+            ),
+            (
+                "discovery.k8s.io",
+                "v1",
+                "endpointslices",
+                "EndpointSlice",
+                json!({"metadata": {"labels": {"a": "b"}}}),
+                bumped,
+            ),
+            (
+                "discovery.k8s.io",
+                "v1",
+                "endpointslices",
+                "EndpointSlice",
+                json!({"metadata": {"annotations": {"a": "b"}}}),
+                unchanged,
+            ),
+            (
+                "discovery.k8s.io",
+                "v1",
+                "endpointslices",
+                "EndpointSlice",
+                json!({"endpoints": [{"addresses": ["10.0.0.1"]}]}),
+                bumped,
+            ),
+            (
+                "",
+                "v1",
+                "podtemplates",
+                "PodTemplate",
+                json!({"template": {"metadata": {"labels": {"a": "b"}}}}),
+                bumped,
+            ),
+            (
+                "admissionregistration.k8s.io",
+                "v1",
+                "validatingwebhookconfigurations",
+                "ValidatingWebhookConfiguration",
+                json!({"webhooks": [{"name": "w"}]}),
+                bumped,
+            ),
+            (
+                "scheduling.k8s.io",
+                "v1",
+                "priorityclasses",
+                "PriorityClass",
+                json!({"description": "changed"}),
+                unchanged,
+            ),
+            (
+                "storage.k8s.io",
+                "v1",
+                "csidrivers",
+                "CSIDriver",
+                json!({"spec": {"attachRequired": false}}),
+                (None, Some(1)),
+            ),
+            (
+                "",
+                "v1",
+                "configmaps",
+                "ConfigMap",
+                json!({"data": {"a": "b"}}),
+                unset,
+            ),
+            (
+                "",
+                "v1",
+                "secrets",
+                "Secret",
+                json!({"data": {"a": "Yg=="}}),
+                unset,
+            ),
+            (
+                "",
+                "v1",
+                "services",
+                "Service",
+                json!({"spec": {"type": "NodePort"}}),
+                unset,
+            ),
+            (
+                "",
+                "v1",
+                "namespaces",
+                "Namespace",
+                json!({"metadata": {"labels": {"a": "b"}}}),
+                unset,
+            ),
+            (
+                "",
+                "v1",
+                "pods",
+                "Pod",
+                json!({"spec": {"nodeName": "n"}}),
+                pod_spec_change,
+            ),
+            (
+                "example.com",
+                "v1",
+                "widgets",
+                "Widget",
+                json!({"spec": {"size": 2}}),
+                bumped,
+            ),
+            (
+                "example.com",
+                "v1",
+                "widgets",
+                "Widget",
+                json!({"status": {"ready": true}}),
+                bumped,
+            ),
+            (
+                "example.com",
+                "v1",
+                "widgets",
+                "Widget",
+                json!({"metadata": {"annotations": {"a": "b"}}}),
+                unchanged,
+            ),
+        ];
+
+        for (group, version, resource, kind, change, expected) in cases {
+            let gvr = GVR::new(group, version, resource);
+            let gvk = GVK::new(group, version, kind);
+            let namespace = match Discovery::is_namespaced(&gvk) {
+                Some(false) => "",
+                _ => "default",
+            };
+            let object = json!({
+                "apiVersion": if group.is_empty() { version.to_string() } else { format!("{group}/{version}") },
+                "kind": kind,
+                "metadata": {"name": "object"},
+            });
+            assert_eq!(
+                generation_after(&gvr, &gvk, namespace, object, change.clone()),
+                expected,
+                "{kind} with {change}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_generation_from_a_request_is_ignored_where_the_server_owns_it() {
+        let tracker = ObjectTracker::default();
+        let (gvr, gvk) = deployments();
+
+        let mut deployment = create_test_deployment("d", "default");
+        deployment["metadata"]["generation"] = json!(9);
+        let created = tracker.create(&gvr, &gvk, deployment, "default").unwrap();
+        assert_eq!(created["metadata"]["generation"], 1);
+
+        let mut update = created;
+        update["metadata"]["generation"] = json!(9);
+        let updated = tracker
+            .update(&gvr, &gvk, update, "default", false)
+            .unwrap();
+        assert_eq!(updated["metadata"]["generation"], 1);
+    }
+
+    #[test]
+    fn test_generation_from_a_request_is_kept_on_kinds_that_do_not_set_it() {
+        let tracker = ObjectTracker::default();
+        let gvr = GVR::new("", "v1", "configmaps");
+        let gvk = GVK::new("", "v1", "ConfigMap");
+        let config_map = |name: &str, generation: i64| {
+            json!({
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": name, "generation": generation},
+            })
+        };
+
+        let created = tracker
+            .create(&gvr, &gvk, config_map("kept", 5), "default")
+            .unwrap();
+        assert_eq!(created["metadata"]["generation"], 5);
+
+        let error = tracker
+            .create(&gvr, &gvk, config_map("negative", -1), "default")
+            .unwrap_err();
+        assert!(
+            matches!(&error, crate::Error::InvalidRequest(message) if message.contains("metadata.generation")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn test_add_keeps_a_supplied_generation() {
+        let tracker = ObjectTracker::default();
+        let (gvr, gvk) = deployments();
+
+        let mut seeded = create_test_deployment("seeded", "default");
+        seeded["metadata"]["generation"] = json!(7);
+        let added = tracker.add(&gvr, &gvk, seeded, "default").unwrap();
+        assert_eq!(added["metadata"]["generation"], 7);
+
+        let defaulted = create_test_deployment("defaulted", "default");
+        let added = tracker.add(&gvr, &gvk, defaulted, "default").unwrap();
+        assert_eq!(added["metadata"]["generation"], 1);
+
+        let config_map = json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": "seeded", "namespace": "default"},
+        });
+        let added = tracker
+            .add(
+                &GVR::new("", "v1", "configmaps"),
+                &GVK::new("", "v1", "ConfigMap"),
+                config_map,
+                "default",
+            )
+            .unwrap();
+        assert!(added["metadata"].get("generation").is_none());
     }
 
     #[test]
@@ -988,20 +1319,24 @@ mod tests {
     #[test]
     fn test_delete_with_finalizers_marks_object() {
         let tracker = ObjectTracker::default();
-        let gvr = GVR::new("", "v1", "pods");
-        let gvk = GVK::new("", "v1", "Pod");
-        let mut obj = create_test_object("test-pod", "default");
+        let (gvr, gvk) = deployments();
+        let mut obj = create_test_deployment("test-deployment", "default");
         obj["metadata"]["finalizers"] = json!(["example.com/cleanup"]);
         tracker.create(&gvr, &gvk, obj, "default").unwrap();
 
         let deleted = tracker
-            .delete(&gvr, "default", "test-pod", DeletePropagation::Unspecified)
+            .delete(
+                &gvr,
+                "default",
+                "test-deployment",
+                DeletePropagation::Unspecified,
+            )
             .unwrap();
         assert!(deleted["metadata"]["deletionTimestamp"].is_string());
         assert_eq!(deleted["metadata"]["deletionGracePeriodSeconds"], 0);
         assert_eq!(deleted["metadata"]["generation"], 2);
 
-        let retrieved = tracker.get(&gvr, "default", "test-pod").unwrap();
+        let retrieved = tracker.get(&gvr, "default", "test-deployment").unwrap();
         assert_eq!(retrieved, deleted);
     }
 

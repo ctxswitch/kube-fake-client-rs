@@ -32,6 +32,7 @@ mod error;
 mod field_selectors;
 mod fields_v1;
 pub mod gen;
+mod generation;
 pub mod interceptor;
 pub mod label_selector;
 mod managed_fields;
