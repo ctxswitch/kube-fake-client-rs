@@ -158,7 +158,8 @@ mod tests {
         let deployment = deployments.get("web-deployment").await.unwrap();
 
         assert_eq!(deployment.metadata.name, Some("web-deployment".to_string()));
-        assert_eq!(deployment.spec.as_ref().unwrap().replicas, Some(3));
+        let deployment = serde_json::to_value(&deployment).unwrap();
+        assert_eq!(deployment["spec"]["replicas"], 3);
     }
 
     /// A fixture keeps its `status`, which a create would replace.

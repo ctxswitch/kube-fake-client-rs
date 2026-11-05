@@ -254,11 +254,6 @@ impl MockService {
                         "resourceVersion" => {
                             params.resource_version = Some(decoded_value.to_string())
                         }
-                        "timeoutSeconds" => {
-                            if let Ok(timeout) = decoded_value.parse::<u32>() {
-                                params.timeout = Some(timeout);
-                            }
-                        }
                         _ => {} // Ignore unknown parameters
                     }
                 }

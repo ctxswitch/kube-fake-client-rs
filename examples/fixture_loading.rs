@@ -1,9 +1,14 @@
 //! Loading fixtures from YAML files
 
-use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{ConfigMap, Pod};
 use kube::api::{Api, ListParams};
 use kube_fake_client::ClientBuilder;
+
+/// Reads `spec.replicas`. `spec` is only optional before v1_37.
+fn spec_replicas(spec: impl Into<Option<DeploymentSpec>>) -> Option<i32> {
+    spec.into().and_then(|spec| spec.replicas)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,11 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), "production");
     let deployment_list = deployments.list(&ListParams::default()).await?;
     for deployment in &deployment_list.items {
-        let replicas = deployment
-            .spec
-            .as_ref()
-            .and_then(|s| s.replicas)
-            .unwrap_or(0);
+        let replicas = spec_replicas(deployment.spec.clone()).unwrap_or(0);
         println!(
             "  - {} (replicas: {})",
             deployment.metadata.name.as_ref().unwrap(),

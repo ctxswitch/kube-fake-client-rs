@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// Keep one release for each `v1_*` feature of the k8s-openapi version that the
 /// root `Cargo.toml` uses. Data for each release lives in a directory named by its minor
 /// version (for example `v1.36`), so a patch bump replaces the files in place.
-pub const RELEASES: &[&str] = &["v1.36.5", "v1.35.9", "v1.34.12", "v1.33.13", "v1.32.13"];
+pub const RELEASES: &[&str] = &["v1.37.2", "v1.36.6", "v1.35.10", "v1.34.13", "v1.33.13"];
 
 const GITHUB_RAW_BASE: &str = "https://raw.githubusercontent.com/kubernetes/kubernetes";
 

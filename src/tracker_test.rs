@@ -337,12 +337,6 @@ mod tests {
 
     #[test]
     fn test_generation_follows_each_kinds_rules() {
-        k8s_openapi::k8s_if_ge_1_33! {
-            let pod_spec_change = (Some(1), Some(2));
-        }
-        k8s_openapi::k8s_if_le_1_32! {
-            let pod_spec_change = (None, None);
-        }
         let unchanged = (Some(1), Some(1));
         let bumped = (Some(1), Some(2));
         let unset = (None, None);
@@ -506,7 +500,7 @@ mod tests {
                 "pods",
                 "Pod",
                 json!({"spec": {"nodeName": "n"}}),
-                pod_spec_change,
+                bumped,
             ),
             (
                 "example.com",
