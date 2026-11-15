@@ -71,7 +71,7 @@ http-body-util = "0.1"
 bytes = "1.11"
 futures = "0.3"
 urlencoding = "2.1"
-jsonschema = "0.60"
+jsonschema = "0.61"
 
 [features]
 validation = []  # Enable OpenAPI schema validation with automatic lazy loading
