@@ -19,6 +19,8 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "jsonschema"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "json-patch"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "k8s-openapi"
         update-types: [ "version-update:semver-minor", "version-update:semver-major", "version-update:semver-patch" ]
 
