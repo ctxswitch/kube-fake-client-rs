@@ -64,7 +64,7 @@ thiserror = "2.0"
 json-patch = "4.2.0"
 tracing = "0.1"
 uuid = { version = "1.19", features = ["v4"] }
-jiff = "0.2"
+jiff = "1.0"
 tower = "0.5"
 http = "1.4"
 http-body-util = "0.1"
